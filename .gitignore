@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.env
+.env.local
+.env.*.local
+tmp/
+bin/
+*.exe
+.DS_Store
+.air.toml
+docs/*.pdf
