@@ -1,4 +1,4 @@
-.PHONY: build run dev frontend all clean
+.PHONY: build run dev frontend all clean deps install-services uninstall-services
 
 # Build the Go router
 build:
@@ -31,3 +31,11 @@ clean:
 deps:
 	go mod tidy
 	cd web && npm install
+
+# Install background services (macOS launchd or Linux systemd)
+install-services: build
+	@bash scripts/install-services.sh
+
+# Uninstall background services
+uninstall-services:
+	@bash scripts/uninstall-services.sh

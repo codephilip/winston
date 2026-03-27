@@ -1,33 +1,40 @@
 #!/bin/bash
-# Restart all Polymr services
+# Restart all Winston/Polymr services
 set -e
 
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UID_NUM=$(id -u)
+LOGS_DIR="$HOME/Library/Logs"
 
 echo "Rebuilding Go router..."
-cd /Users/pg/Desktop/personal-polymr
+cd "$PROJECT_DIR"
 go build -o bin/polymr ./cmd/polymr
 
 echo "Rebuilding Next.js frontend..."
-cd /Users/pg/Desktop/personal-polymr/web
+cd "$PROJECT_DIR/web"
 npm run build --silent
 
 echo "Restarting services..."
-launchctl bootout gui/$UID_NUM /Users/pg/Library/LaunchAgents/com.polymr.router.plist 2>/dev/null || true
-launchctl bootout gui/$UID_NUM /Users/pg/Library/LaunchAgents/com.polymr.frontend.plist 2>/dev/null || true
+launchctl bootout "gui/$UID_NUM/com.winston.router" 2>/dev/null || true
+launchctl bootout "gui/$UID_NUM/com.winston.frontend" 2>/dev/null || true
 
 # Kill any stragglers
 lsof -ti :3000 2>/dev/null | xargs kill -9 2>/dev/null || true
 lsof -ti :8080 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
-launchctl bootstrap gui/$UID_NUM /Users/pg/Library/LaunchAgents/com.polymr.frontend.plist
-launchctl bootstrap gui/$UID_NUM /Users/pg/Library/LaunchAgents/com.polymr.router.plist
+launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/com.winston.frontend.plist"
+launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/com.winston.router.plist"
 sleep 3
 
 echo "Checking services..."
-launchctl list | grep polymr
+launchctl list | grep winston
 echo ""
+
+echo "Recent router logs:"
+tail -5 "$LOGS_DIR/winston-router.out.log" 2>/dev/null || echo "(no router logs yet)"
+echo ""
+
 curl -s https://personal-api.polymr.io/health
 echo ""
 echo "Done."
