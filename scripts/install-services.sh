@@ -113,7 +113,9 @@ PLIST
     <string>$PROJECT_DIR/web</string>
     <key>EnvironmentVariables</key>
     <dict>
-$ENV_BLOCK    </dict>
+$ENV_BLOCK        <key>PORT</key>
+        <string>3000</string>
+    </dict>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>

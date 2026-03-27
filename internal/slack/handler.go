@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/polymr/polymr/internal/agents"
 	"github.com/polymr/polymr/internal/sanitize"
@@ -66,7 +67,6 @@ func HandleSlashCommand(manager *agents.Manager) http.HandlerFunc {
 
 		command := strings.TrimPrefix(r.FormValue("command"), "/")
 		text := r.FormValue("text")
-		responseURL := r.FormValue("response_url")
 		channelID := r.FormValue("channel_id")
 		// Validate the agent exists
 		if !manager.HasAgent(command) {
@@ -78,43 +78,54 @@ func HandleSlashCommand(manager *agents.Manager) http.HandlerFunc {
 			return
 		}
 
-		// Acknowledge immediately (Slack requires response within 3s).
-		// Empty 200 — the async goroutine posts the real "thinking..." message.
-		w.WriteHeader(http.StatusOK)
+		// Respond in_channel so Slack shows the slash command as the user's message
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"response_type": "in_channel",
+			"text":          text,
+		})
 
-		// Spawn agent asynchronously, create a thread, store session
+		// Spawn agent asynchronously — find the user's message and reply in its thread
 		go func() {
-			// Post the initial "thinking" message to get a thread TS
-			_, threadTS, err := Client.PostMessage(channelID,
-				slackapi.MsgOptionText(
-					fmt.Sprintf("*/%s* › %s\n_thinking..._", command, text), false,
-				),
+			// Small delay to let Slack process the in_channel response
+			time.Sleep(2 * time.Second)
+
+			// Find the slash command response — it's the most recent message in the channel
+			history, err := Client.GetConversationHistory(&slackapi.GetConversationHistoryParameters{
+				ChannelID: channelID,
+				Limit:     1,
+			})
+			if err != nil || len(history.Messages) == 0 {
+				log.Printf("[slack] failed to find slash command message: %v", err)
+				return
+			}
+			threadTS := history.Messages[0].Timestamp
+
+			// Post streaming reply in thread
+			_, replyTS, err := Client.PostMessage(channelID,
+				slackapi.MsgOptionText("_thinking..._", false),
+				slackapi.MsgOptionTS(threadTS),
 				slackapi.MsgOptionUsername(BotDisplayName),
 			)
 			if err != nil {
-				postAsyncResponse(responseURL, channelID, command, fmt.Sprintf("Failed to post: %v", err))
+				log.Printf("[slack] failed to post thread reply: %v", err)
 				return
 			}
 
-			// Sanitize input before passing to agent
-			text = sanitize.Input(text)
+			sanitizedText := sanitize.Input(text)
+			updater := NewStreamingSlackUpdater(channelID, replyTS)
 
-			// Set up streaming updater that edits the "thinking..." message in-place
-			updater := NewStreamingSlackUpdater(channelID, threadTS)
-
-			// Run the agent with streaming and tie the session to this thread
-			result, err := manager.SpawnAgentInThreadStreaming(command, text, channelID, threadTS, updater.Update)
+			result, err := manager.SpawnAgentInThreadStreaming(command, sanitizedText, channelID, threadTS, updater.Update)
 			if err != nil {
 				result = fmt.Sprintf("Agent error: %v", err)
 			}
 
-			// Final update: replace the message with the complete result
 			finalText := result
 			if len(finalText) > 3000 {
 				finalText = finalText[:2950] + "\n\n_...response truncated_"
 			}
 			Client.UpdateMessage(channelID,
-				threadTS,
+				replyTS,
 				slackapi.MsgOptionText(finalText, false),
 				slackapi.MsgOptionUsername(BotDisplayName),
 			)
@@ -158,6 +169,9 @@ func HandleEvent(manager *agents.Manager) http.HandlerFunc {
 		channel, _ := event["channel"].(string)
 
 		threadTS, _ := event["thread_ts"].(string)
+
+		log.Printf("[slack] event type=%s channel=%s thread_ts=%q text=%q",
+			eventType, channel, threadTS, truncate(text, 60))
 
 		switch eventType {
 		case "app_mention":
@@ -246,16 +260,42 @@ func handleMention(manager *agents.Manager, text, channel, threadTS string) {
 
 	// If inside a thread, try to resume an existing session first.
 	if threadTS != "" {
-		result, found, err := manager.ContinueThread(threadTS, prompt)
+		log.Printf("[slack] @mention in existing thread=%s, trying to continue session", threadTS)
+
+		// Post placeholder and stream the response
+		_, msgTS, err := Client.PostMessage(channel,
+			slackapi.MsgOptionText("_thinking..._", false),
+			slackapi.MsgOptionTS(threadTS),
+			slackapi.MsgOptionUsername(BotDisplayName),
+		)
 		if err != nil {
+			log.Printf("[slack] failed to post placeholder: %v", err)
 			PostThreadReply(channel, threadTS, fmt.Sprintf("Error: %v", err))
 			return
 		}
-		if found {
-			PostThreadReply(channel, threadTS, result)
+
+		updater := NewStreamingSlackUpdater(channel, msgTS)
+		result, found, err := manager.ContinueThreadStreaming(threadTS, prompt, updater.Update)
+		if err != nil {
+			Client.UpdateMessage(channel, msgTS,
+				slackapi.MsgOptionText(fmt.Sprintf("Error: %v", err), false),
+				slackapi.MsgOptionUsername(BotDisplayName),
+			)
 			return
 		}
-		// No session for this thread — fall through to start a new one.
+		if found {
+			finalText := result
+			if len(finalText) > 3000 {
+				finalText = finalText[:2950] + "\n\n_...response truncated_"
+			}
+			Client.UpdateMessage(channel, msgTS,
+				slackapi.MsgOptionText(finalText, false),
+				slackapi.MsgOptionUsername(BotDisplayName),
+			)
+			return
+		}
+		// No session — delete placeholder and fall through to start a new one.
+		Client.DeleteMessage(channel, msgTS)
 	}
 
 	// Check if the message starts with an agent name
@@ -294,18 +334,52 @@ func handleMention(manager *agents.Manager, text, channel, threadTS string) {
 
 // handleThreadMessage continues a conversation in an existing thread.
 func handleThreadMessage(manager *agents.Manager, text, channel, threadTS string) {
-	// Try to resume the existing Claude session for this thread
-	result, found, err := manager.ContinueThread(threadTS, sanitize.Input(text))
+	log.Printf("[slack] thread reply in %s thread=%s text=%q", channel, threadTS, truncate(text, 80))
+
+	// Post a placeholder that we'll update with streaming output
+	_, msgTS, err := Client.PostMessage(channel,
+		slackapi.MsgOptionText("_thinking..._", false),
+		slackapi.MsgOptionTS(threadTS),
+		slackapi.MsgOptionUsername(BotDisplayName),
+	)
 	if err != nil {
-		PostThreadReply(channel, threadTS, fmt.Sprintf("Error: %v", err))
-		return
-	}
-	if !found {
-		// No active session for this thread — ignore (not a Winston thread)
+		log.Printf("[slack] failed to post placeholder: %v", err)
 		return
 	}
 
-	PostThreadReply(channel, threadTS, result)
+	updater := NewStreamingSlackUpdater(channel, msgTS)
+
+	result, found, err := manager.ContinueThreadStreaming(threadTS, sanitize.Input(text), updater.Update)
+	if err != nil {
+		log.Printf("[slack] continue thread error: %v", err)
+		Client.UpdateMessage(channel, msgTS,
+			slackapi.MsgOptionText(fmt.Sprintf("Error: %v", err), false),
+			slackapi.MsgOptionUsername(BotDisplayName),
+		)
+		return
+	}
+	if !found {
+		log.Printf("[slack] no session for thread=%s, deleting placeholder", threadTS)
+		Client.DeleteMessage(channel, msgTS)
+		return
+	}
+
+	// Final update with complete result
+	finalText := result
+	if len(finalText) > 3000 {
+		finalText = finalText[:2950] + "\n\n_...response truncated_"
+	}
+	Client.UpdateMessage(channel, msgTS,
+		slackapi.MsgOptionText(finalText, false),
+		slackapi.MsgOptionUsername(BotDisplayName),
+	)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // handleTopicSelection processes when a user clicks a YouTube topic button.

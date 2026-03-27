@@ -285,6 +285,8 @@ func (m *Manager) ContinueThread(threadTS, message string) (string, bool, error)
 	agent := m.agents[session.AgentID]
 	m.mu.RUnlock()
 
+	log.Printf("[agents] continuing session thread=%s agent=%s claude_session=%s", threadTS, session.AgentID, session.ClaudeSessionID)
+
 	result, err := m.runClaude(context.Background(), agent, message, session.ClaudeSessionID)
 	if err != nil {
 		return "", true, err
@@ -294,6 +296,37 @@ func (m *Manager) ContinueThread(threadTS, message string) (string, bool, error)
 	}
 
 	// Update session with new Claude session ID and last used time
+	m.mu.Lock()
+	session.ClaudeSessionID = result.SessionID
+	session.LastUsed = time.Now()
+	m.mu.Unlock()
+
+	return result.Result, true, nil
+}
+
+// ContinueThreadStreaming resumes an existing Claude session with streaming output.
+func (m *Manager) ContinueThreadStreaming(threadTS, message string, onUpdate StreamCallback) (string, bool, error) {
+	m.mu.RLock()
+	session, ok := m.sessions[threadTS]
+	m.mu.RUnlock()
+	if !ok {
+		return "", false, nil
+	}
+
+	m.mu.RLock()
+	agent := m.agents[session.AgentID]
+	m.mu.RUnlock()
+
+	log.Printf("[agents] continuing session (streaming) thread=%s agent=%s claude_session=%s", threadTS, session.AgentID, session.ClaudeSessionID)
+
+	result, err := m.runClaudeStreaming(context.Background(), agent, message, session.ClaudeSessionID, onUpdate)
+	if err != nil {
+		return "", true, err
+	}
+	if result == nil {
+		return "", true, fmt.Errorf("agent returned no result")
+	}
+
 	m.mu.Lock()
 	session.ClaudeSessionID = result.SessionID
 	session.LastUsed = time.Now()
