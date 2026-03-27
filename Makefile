@@ -1,4 +1,4 @@
-.PHONY: build run dev frontend all clean deps install-services uninstall-services
+.PHONY: build run dev frontend all clean deps install-services uninstall-services test test-unit test-security test-cover lint
 
 # Build the Go router
 build:
@@ -39,3 +39,27 @@ install-services: build
 # Uninstall background services
 uninstall-services:
 	@bash scripts/uninstall-services.sh
+
+# Run all tests
+test:
+	go test -v -race -count=1 ./internal/...
+
+# Run unit tests only (excludes Security and Integration prefixed tests)
+test-unit:
+	go test -v -race -run 'Test[^S][^e][^c]' ./internal/...
+
+# Run security tests only
+test-security:
+	go test -v -race -run TestSecurity ./internal/...
+
+# Run tests with coverage report
+test-cover:
+	go test -coverprofile=coverage.out -covermode=atomic ./internal/...
+	go tool cover -func=coverage.out
+	@echo ""
+	@echo "HTML report: go tool cover -html=coverage.out"
+
+# Run Go linter
+lint:
+	go vet ./...
+	@which golangci-lint > /dev/null 2>&1 && golangci-lint run || echo "Install golangci-lint for full linting"
