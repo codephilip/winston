@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 )
+
+// StreamCallback is called periodically with accumulated output during streaming.
+type StreamCallback func(partial string)
 
 // AgentConfig defines a registered agent and its capabilities.
 type AgentConfig struct {
@@ -209,6 +213,38 @@ func (m *Manager) SpawnAgentInThread(agentName, prompt, channel, threadTS string
 	return result.Result, nil
 }
 
+// SpawnAgentInThreadStreaming starts a new session tied to a Slack thread,
+// calling onUpdate with partial output as it streams in.
+func (m *Manager) SpawnAgentInThreadStreaming(agentName, prompt, channel, threadTS string, onUpdate StreamCallback) (string, error) {
+	m.mu.RLock()
+	agent, ok := m.agents[agentName]
+	m.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("agent %q not found", agentName)
+	}
+
+	result, err := m.runClaudeStreaming(context.Background(), agent, prompt, "", onUpdate)
+	if err != nil {
+		return "", err
+	}
+	if result == nil {
+		return "", fmt.Errorf("agent returned no result")
+	}
+
+	// Store the session keyed by Slack thread TS
+	m.mu.Lock()
+	m.sessions[threadTS] = &Session{
+		ClaudeSessionID: result.SessionID,
+		AgentID:         agentName,
+		SlackThreadTS:   threadTS,
+		SlackChannel:    channel,
+		LastUsed:        time.Now(),
+	}
+	m.mu.Unlock()
+
+	return result.Result, nil
+}
+
 // ContinueThread resumes an existing Claude session for a Slack thread reply.
 func (m *Manager) ContinueThread(threadTS, message string) (string, bool, error) {
 	m.mu.RLock()
@@ -279,6 +315,140 @@ func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, res
 	if err := json.Unmarshal(output, &result); err != nil {
 		// Fallback: return raw output if JSON parsing fails
 		return &claudeResult{Result: string(output)}, nil
+	}
+
+	if result.IsError {
+		return nil, fmt.Errorf("agent error: %s", result.Result)
+	}
+
+	return &result, nil
+}
+
+// runClaudeStreaming executes the claude CLI with streaming output, calling onUpdate
+// periodically (at most every 2 seconds) with accumulated output.
+// At the end, it parses the final JSON result just like runClaude.
+func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, prompt, resumeID string, onUpdate StreamCallback) (*claudeResult, error) {
+	model := agent.Model
+	if model == "" {
+		model = "sonnet"
+	}
+
+	prompt, model = parseModelOverride(prompt, model)
+
+	args := []string{
+		"--print",
+		"--output-format", "stream-json",
+		"--dangerously-skip-permissions",
+		"--model", model,
+	}
+
+	if resumeID != "" {
+		args = append(args, "--resume", resumeID)
+	}
+
+	args = append(args, prompt)
+
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Dir = os.Getenv("HOME")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("agent %s pipe failed: %w", agent.Name, err)
+	}
+	// Capture stderr separately so it doesn't pollute the stream
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("agent %s start failed: %w", agent.Name, err)
+	}
+
+	// Read output line by line, accumulating text and throttling callback
+	var accumulated strings.Builder
+	var lastResult claudeResult
+	hasResult := false
+
+	scanner := bufio.NewScanner(stdout)
+	// Allow large lines (up to 1MB)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	lastUpdate := time.Time{}
+	throttle := 2 * time.Second
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		// Try to parse as a stream-json event
+		var event struct {
+			Type      string `json:"type"`
+			Subtype   string `json:"subtype"`
+			Result    string `json:"result"`
+			IsError   bool   `json:"is_error"`
+			SessionID string `json:"session_id"`
+			Content   string `json:"content"`
+		}
+
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			// Not JSON — treat as raw text
+			accumulated.WriteString(line)
+			accumulated.WriteString("\n")
+		} else {
+			switch event.Type {
+			case "assistant":
+				// Content delta from the assistant
+				if event.Content != "" {
+					accumulated.WriteString(event.Content)
+				}
+			case "result":
+				// Final result event
+				lastResult = claudeResult{
+					Type:      event.Type,
+					Subtype:   event.Subtype,
+					Result:    event.Result,
+					IsError:   event.IsError,
+					SessionID: event.SessionID,
+				}
+				hasResult = true
+				continue
+			case "content_block_delta":
+				if event.Content != "" {
+					accumulated.WriteString(event.Content)
+				}
+			default:
+				// Other event types (system, tool_use, etc.) — skip for display
+				continue
+			}
+		}
+
+		// Throttled callback
+		if onUpdate != nil && time.Since(lastUpdate) >= throttle {
+			onUpdate(accumulated.String())
+			lastUpdate = time.Now()
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("agent %s failed: %w\nstderr: %s", agent.Name, err, stderrBuf.String())
+	}
+
+	// If we got a structured result from stream-json, use it
+	if hasResult {
+		if lastResult.IsError {
+			return nil, fmt.Errorf("agent error: %s", lastResult.Result)
+		}
+		return &lastResult, nil
+	}
+
+	// Fallback: try to parse the accumulated output as JSON (in case stream-json
+	// isn't supported and it fell back to regular json output)
+	raw := strings.TrimSpace(accumulated.String())
+	var result claudeResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		// Return raw output
+		return &claudeResult{Result: raw}, nil
 	}
 
 	if result.IsError {
