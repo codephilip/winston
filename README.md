@@ -661,6 +661,27 @@ curl -X DELETE -u admin:pass http://localhost:8080/api/schedules/sched_1
 
 ---
 
+## Why Local Scheduling Beats Claude's Native `/schedule`
+
+Claude Code has a built-in `/schedule` command that creates cloud-hosted cron jobs running on Anthropic's infrastructure. Winston deliberately does **not** use it for its core scheduling, and that's a feature.
+
+| | Winston (local cron) | Claude `/schedule` (cloud) |
+|---|---|---|
+| **Tool access** | Full — SSH, browser, file system, APIs, your entire Mac | None — isolated cloud sandbox with no local tools |
+| **Environment** | Your `.env`, credentials, MCP servers, all skills | Clean room — no secrets, no local context |
+| **What it can do** | `ssh kali`, read files, call internal APIs, run scripts | Text generation only |
+| **Slack posting** | Direct via your bot token | Requires Slack connector setup |
+| **Persistence** | Lives with the process; survives restarts via launchd | Managed by Anthropic |
+| **Debugging** | `tail -f /tmp/winston-router.log` | Black box |
+
+The `/schedule` command is great for pure text tasks — summarise this URL every morning, draft a newsletter, remind me about X. But the moment your scheduled job needs to *do* something — check a server, run a scan, pull analytics from an API, push a file — it's useless. It has no access to your machine, your credentials, or your tools.
+
+Winston's local cron runs agents the same way a Slack command does: a full Claude CLI subprocess with your environment, your MCP servers, your SSH keys, your everything. A scheduled pentester scan can actually SSH into Kali. A scheduled marketing report can pull live data from your APIs. A scheduled YouTube agent can query the YouTube Data API and upload a draft.
+
+That's the whole point — **scheduled agents that can act, not just think**.
+
+---
+
 ## Adding New Agents
 
 It takes about 2 minutes:
