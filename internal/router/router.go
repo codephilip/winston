@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/cors"
 
 	"github.com/polymr/polymr/internal/agents"
+	"github.com/polymr/polymr/internal/kali"
 	"github.com/polymr/polymr/internal/slack"
 	"github.com/polymr/polymr/internal/voice"
 )
@@ -73,6 +74,7 @@ func New() http.Handler {
 		r.Delete("/schedules/{id}", manager.DeleteSchedule)
 		r.Post("/voice/transcribe", handleVoiceTranscribe(voiceClient))
 		r.Post("/voice/synthesize", handleVoiceSynthesize(voiceClient))
+		r.Get("/kali/status", handleKaliStatus)
 	})
 
 	// Frontend proxy (personal.polymr.io → Next.js on :3000, behind basic auth)
@@ -169,4 +171,10 @@ func handleVoiceSynthesize(vc *voice.Client) http.HandlerFunc {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(audioBytes)))
 		w.Write(audioBytes)
 	}
+}
+
+func handleKaliStatus(w http.ResponseWriter, r *http.Request) {
+	status, _ := kali.CheckConnectivity()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
