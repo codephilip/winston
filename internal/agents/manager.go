@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,27 @@ import (
 
 // AgentConfig defines a registered agent and its capabilities.
 type AgentConfig struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Model       string `json:"model,omitempty"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Model       string        `json:"model,omitempty"`
+	Timeout     time.Duration `json:"-"`
+}
+
+// agentConfigJSON is the JSON wire format for AgentConfig (timeout as integer seconds).
+type agentConfigJSON struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	Model          string `json:"model,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+}
+
+func (a AgentConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(agentConfigJSON{
+		Name:           a.Name,
+		Description:    a.Description,
+		Model:          a.Model,
+		TimeoutSeconds: int(a.Timeout.Seconds()),
+	})
 }
 
 // Session represents an active agent conversation tied to a Slack thread.
@@ -131,6 +150,11 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 			cfg.Description = strings.TrimSpace(v)
 		case "model":
 			cfg.Model = strings.TrimSpace(v)
+		case "timeout":
+			secs, err := strconv.Atoi(strings.TrimSpace(v))
+			if err == nil && secs > 0 {
+				cfg.Timeout = time.Duration(secs) * time.Second
+			}
 		}
 	}
 	if cfg.Name == "" {
@@ -138,6 +162,9 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 	}
 	if cfg.Model == "" {
 		cfg.Model = "sonnet"
+	}
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 600 * time.Second
 	}
 	return cfg, nil
 }
@@ -264,14 +291,19 @@ func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, res
 
 	args = append(args, prompt)
 
-	// No hard timeout — complex workflows (pentesting, video scripts) need room to breathe.
-	// The context passed in can still carry a caller-imposed deadline if needed.
+	// Apply per-agent timeout.
+	ctx, cancel := context.WithTimeout(ctx, agent.Timeout)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// Run from $HOME so Claude loads ~/.claude agents, skills, and settings.
 	cmd.Dir = os.Getenv("HOME")
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("agent %s timed out after %s", agent.Name, agent.Timeout)
+		}
 		return nil, fmt.Errorf("agent %s failed: %w\noutput: %s", agent.Name, err, string(output))
 	}
 
