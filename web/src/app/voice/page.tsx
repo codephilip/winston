@@ -144,6 +144,7 @@ export default function VoiceChat() {
               <option value="marketing">Marketing</option>
               <option value="pentester">Pentester</option>
               <option value="youtube">YouTube</option>
+              <option value="designer">Designer</option>
             </optgroup>
           </select>
         </div>

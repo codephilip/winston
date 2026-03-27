@@ -25,10 +25,11 @@ type StreamCallback func(partial string)
 
 // AgentConfig defines a registered agent and its capabilities.
 type AgentConfig struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Model       string        `json:"model,omitempty"`
-	Timeout     time.Duration `json:"-"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description"`
+	Model        string        `json:"model,omitempty"`
+	Timeout      time.Duration `json:"-"`
+	SystemPrompt string        `json:"-"` // body of the agent .md file
 }
 
 // agentConfigJSON is the JSON wire format for AgentConfig (timeout as integer seconds).
@@ -170,6 +171,7 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 600 * time.Second
 	}
+	cfg.SystemPrompt = strings.TrimSpace(parts[1])
 	return cfg, nil
 }
 
@@ -354,6 +356,10 @@ func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, res
 		"--model", model,
 	}
 
+	if agent.SystemPrompt != "" && resumeID == "" {
+		args = append(args, "--system-prompt", agent.SystemPrompt)
+	}
+
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	}
@@ -408,6 +414,10 @@ func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, pr
 		"--model", model,
 	}
 
+	if agent.SystemPrompt != "" && resumeID == "" {
+		args = append(args, "--system-prompt", agent.SystemPrompt)
+	}
+
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	}
@@ -429,8 +439,10 @@ func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, pr
 		return nil, fmt.Errorf("agent %s start failed: %w", agent.Name, err)
 	}
 
-	// Read output line by line, accumulating text and throttling callback
+	// Read output line by line, accumulating text and throttling callback.
+	// We track both the final text output and a status line showing tool activity.
 	var accumulated strings.Builder
+	var toolStatus string // current tool activity status line
 	var lastResult claudeResult
 	hasResult := false
 
@@ -447,51 +459,73 @@ func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, pr
 			continue
 		}
 
-		// Try to parse as a stream-json event
-		var event struct {
-			Type      string `json:"type"`
+		// Parse the stream-json event — assistant events have nested message.content[]
+		var envelope struct {
+			Type    string          `json:"type"`
+			Message json.RawMessage `json:"message"`
+			// flat fields for result events
 			Subtype   string `json:"subtype"`
 			Result    string `json:"result"`
 			IsError   bool   `json:"is_error"`
 			SessionID string `json:"session_id"`
-			Content   string `json:"content"`
 		}
 
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			// Not JSON — treat as raw text
+		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
 			accumulated.WriteString(line)
 			accumulated.WriteString("\n")
 		} else {
-			switch event.Type {
+			switch envelope.Type {
 			case "assistant":
-				// Content delta from the assistant
-				if event.Content != "" {
-					accumulated.WriteString(event.Content)
+				// Parse the nested message to extract content blocks
+				var msg struct {
+					Content []struct {
+						Type  string          `json:"type"`
+						Text  string          `json:"text"`
+						Name  string          `json:"name"`
+						Input json.RawMessage `json:"input"`
+					} `json:"content"`
+				}
+				if err := json.Unmarshal(envelope.Message, &msg); err == nil {
+					for _, block := range msg.Content {
+						switch block.Type {
+						case "text":
+							if block.Text != "" {
+								toolStatus = "" // clear status once text flows
+								accumulated.WriteString(block.Text)
+							}
+						case "tool_use":
+							toolStatus = formatToolStatus(block.Name, block.Input)
+						}
+					}
 				}
 			case "result":
-				// Final result event
 				lastResult = claudeResult{
-					Type:      event.Type,
-					Subtype:   event.Subtype,
-					Result:    event.Result,
-					IsError:   event.IsError,
-					SessionID: event.SessionID,
+					Type:      envelope.Type,
+					Subtype:   envelope.Subtype,
+					Result:    envelope.Result,
+					IsError:   envelope.IsError,
+					SessionID: envelope.SessionID,
 				}
 				hasResult = true
 				continue
-			case "content_block_delta":
-				if event.Content != "" {
-					accumulated.WriteString(event.Content)
-				}
 			default:
-				// Other event types (system, tool_use, etc.) — skip for display
 				continue
 			}
 		}
 
-		// Throttled callback
+		// Throttled callback — append tool status if the agent is working
 		if onUpdate != nil && time.Since(lastUpdate) >= throttle {
-			onUpdate(accumulated.String())
+			display := accumulated.String()
+			if toolStatus != "" {
+				if display != "" {
+					display += "\n\n"
+				}
+				display += toolStatus
+			}
+			if display == "" {
+				display = "_thinking..._"
+			}
+			onUpdate(display)
 			lastUpdate = time.Now()
 		}
 	}
@@ -696,6 +730,50 @@ func parseModelOverride(prompt, defaultModel string) (string, string) {
 		}
 	}
 	return prompt, defaultModel
+}
+
+// formatToolStatus returns a short Slack-formatted status line for a tool_use event.
+func formatToolStatus(toolName string, rawInput json.RawMessage) string {
+	// Friendly display names for common tools
+	labels := map[string]string{
+		"Bash":      "Running command",
+		"Read":      "Reading file",
+		"Write":     "Writing file",
+		"Edit":      "Editing file",
+		"Glob":      "Searching files",
+		"Grep":      "Searching code",
+		"WebFetch":  "Fetching URL",
+		"WebSearch": "Searching the web",
+		"Agent":     "Spawning sub-agent",
+		"Skill":     "Running skill",
+	}
+
+	label, ok := labels[toolName]
+	if !ok {
+		// For MCP tools, clean up the prefix
+		display := toolName
+		if idx := strings.LastIndex(toolName, "__"); idx >= 0 {
+			display = strings.ReplaceAll(toolName[idx+2:], "_", " ")
+		}
+		label = "Using " + display
+	}
+
+	// Try to extract a short detail from the input
+	var input map[string]interface{}
+	if err := json.Unmarshal(rawInput, &input); err == nil {
+		// Pick the most informative field to show
+		for _, key := range []string{"description", "command", "file_path", "pattern", "query", "prompt", "skill"} {
+			if v, ok := input[key]; ok {
+				s := fmt.Sprintf("%v", v)
+				if len(s) > 80 {
+					s = s[:77] + "..."
+				}
+				return fmt.Sprintf("_:gear: %s:_ `%s`", label, s)
+			}
+		}
+	}
+
+	return fmt.Sprintf("_:gear: %s..._", label)
 }
 
 func (m *Manager) DeleteSchedule(w http.ResponseWriter, r *http.Request) {

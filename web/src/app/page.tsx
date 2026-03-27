@@ -34,6 +34,14 @@ const agents = [
     icon: "Y",
     color: "bg-purple-500",
   },
+  {
+    name: "Designer",
+    slug: "designer",
+    description:
+      "Elite frontend design — inspiration research, mockup generation, Figma builds, and production-ready UI",
+    icon: "D",
+    color: "bg-emerald-500",
+  },
 ];
 
 export default function Home() {
@@ -94,7 +102,7 @@ export default function Home() {
             Specialist agents for specific workflows. Chat directly or let
             Winston delegate.
           </p>
-          <div className="grid gap-6 md:grid-cols-3">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
             {agents.map((agent) => (
               <Link
                 key={agent.slug}
