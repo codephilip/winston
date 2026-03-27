@@ -369,6 +369,7 @@ func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, pr
 
 	args := []string{
 		"--print",
+		"--verbose",
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 		"--model", model,
