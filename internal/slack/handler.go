@@ -107,11 +107,13 @@ func HandleEvent(manager *agents.Manager) http.HandlerFunc {
 		text, _ := event["text"].(string)
 		channel, _ := event["channel"].(string)
 
+		threadTS, _ := event["thread_ts"].(string)
+
 		switch eventType {
 		case "app_mention":
-			go handleMention(manager, text, channel)
+			go handleMention(manager, text, channel, threadTS)
 		case "message":
-			if threadTS, ok := event["thread_ts"].(string); ok {
+			if threadTS != "" {
 				go handleThreadMessage(manager, text, channel, threadTS)
 			}
 		}
@@ -173,16 +175,38 @@ func postAsyncResponse(responseURL, channel, agent, result string) {
 }
 
 // handleMention processes @Winston mentions and routes to the appropriate agent.
-func handleMention(manager *agents.Manager, text, channel string) {
+// If threadTS is non-empty, the mention is inside an existing thread and the
+// response is posted as a thread reply. When a session already exists for that
+// thread, the conversation is resumed instead of starting fresh.
+func handleMention(manager *agents.Manager, text, channel, threadTS string) {
 	// Strip the bot mention prefix
 	// Text comes in as "<@BOTID> do something" — extract the command
 	parts := strings.SplitN(text, " ", 2)
 	if len(parts) < 2 {
-		PostMessage(channel, "Mention me with a command, e.g. `@Winston /marketing analyze our latest campaign`")
+		reply := "Mention me with a command, e.g. `@Winston /marketing analyze our latest campaign`"
+		if threadTS != "" {
+			PostThreadReply(channel, threadTS, reply)
+		} else {
+			PostMessage(channel, reply)
+		}
 		return
 	}
 
-	prompt := parts[1]
+	prompt := sanitize.Input(parts[1])
+
+	// If inside a thread, try to resume an existing session first.
+	if threadTS != "" {
+		result, found, err := manager.ContinueThread(threadTS, prompt)
+		if err != nil {
+			PostThreadReply(channel, threadTS, fmt.Sprintf("Error: %v", err))
+			return
+		}
+		if found {
+			PostThreadReply(channel, threadTS, result)
+			return
+		}
+		// No session for this thread — fall through to start a new one.
+	}
 
 	// Check if the message starts with an agent name
 	agentName, agentPrompt := parseAgentFromText(prompt, manager.AgentNames())
@@ -192,17 +216,30 @@ func handleMention(manager *agents.Manager, text, channel string) {
 		for _, name := range manager.AgentNames() {
 			lines += fmt.Sprintf("`/%s`\n", name)
 		}
-		PostMessage(channel, lines)
+		if threadTS != "" {
+			PostThreadReply(channel, threadTS, lines)
+		} else {
+			PostMessage(channel, lines)
+		}
 		return
 	}
 
 	result, err := manager.SpawnAgent(agentName, sanitize.Input(agentPrompt))
 	if err != nil {
-		PostMessage(channel, fmt.Sprintf("Agent error: %v", err))
+		if threadTS != "" {
+			PostThreadReply(channel, threadTS, fmt.Sprintf("Agent error: %v", err))
+		} else {
+			PostMessage(channel, fmt.Sprintf("Agent error: %v", err))
+		}
 		return
 	}
 
-	PostMessage(channel, fmt.Sprintf("*/%s:*\n%s", agentName, result))
+	response := fmt.Sprintf("*/%s:*\n%s", agentName, result)
+	if threadTS != "" {
+		PostThreadReply(channel, threadTS, response)
+	} else {
+		PostMessage(channel, response)
+	}
 }
 
 // handleThreadMessage continues a conversation in an existing thread.
