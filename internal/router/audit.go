@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -22,7 +23,11 @@ type auditEntry struct {
 var auditLogger *log.Logger
 
 func init() {
-	f, err := os.OpenFile("/Users/pg/Library/Logs/polymr-audit.log",
+	logPath := os.Getenv("AUDIT_LOG_PATH")
+	if logPath == "" {
+		logPath = filepath.Join(os.Getenv("HOME"), "Library", "Logs", "polymr-audit.log")
+	}
+	f, err := os.OpenFile(logPath,
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		log.Printf("[audit] WARNING: could not open audit log: %v", err)
