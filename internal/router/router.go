@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"net/http/httputil"
 	"net/url"
 
@@ -85,10 +86,14 @@ func New() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Host {
 		case "personal.polymr.io":
-			// All requests to personal.polymr.io require rate limiting + auth
+			// Static assets don't need auth or rate limiting
+			if strings.HasPrefix(r.URL.Path, "/_next/") || r.URL.Path == "/favicon.ico" {
+				frontendProxy.ServeHTTP(w, r)
+				return
+			}
+			// Everything else requires rate limiting + auth
 			RateLimitAPI(RateLimitAuth(AuditLog(BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Serve API routes directly, proxy everything else to Next.js
-				if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+				if strings.HasPrefix(r.URL.Path, "/api") {
 					api.ServeHTTP(w, r)
 				} else {
 					frontendProxy.ServeHTTP(w, r)
