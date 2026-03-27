@@ -7,11 +7,54 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/polymr/polymr/internal/agents"
 	"github.com/polymr/polymr/internal/sanitize"
 	slackapi "github.com/slack-go/slack"
 )
+
+// StreamingSlackUpdater edits a Slack message in-place with partial agent output.
+type StreamingSlackUpdater struct {
+	channelID string
+	threadTS  string // the timestamp of the message to update
+	mu        sync.Mutex
+}
+
+// NewStreamingSlackUpdater creates a new updater for the given message.
+func NewStreamingSlackUpdater(channelID, messageTS string) *StreamingSlackUpdater {
+	return &StreamingSlackUpdater{
+		channelID: channelID,
+		threadTS:  messageTS,
+	}
+}
+
+// Update implements the StreamCallback — edits the Slack message with partial output.
+func (s *StreamingSlackUpdater) Update(partial string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Truncate to stay within Slack message limits
+	display := partial
+	if len(display) > 3000 {
+		display = display[len(display)-2950:] // show the tail
+		display = "_...output truncated..._\n" + display
+	}
+
+	if display == "" {
+		display = "_streaming..._"
+	}
+
+	_, _, _, err := Client.UpdateMessage(
+		s.channelID,
+		s.threadTS,
+		slackapi.MsgOptionText(display, false),
+		slackapi.MsgOptionUsername(BotDisplayName),
+	)
+	if err != nil {
+		log.Printf("[slack] streaming update failed: %v", err)
+	}
+}
 
 // HandleSlashCommand processes /marketing, /pentester, /youtube commands from Slack.
 func HandleSlashCommand(manager *agents.Manager) http.HandlerFunc {
@@ -56,16 +99,23 @@ func HandleSlashCommand(manager *agents.Manager) http.HandlerFunc {
 			// Sanitize input before passing to agent
 			text = sanitize.Input(text)
 
-			// Run the agent and tie the session to this thread
-			result, err := manager.SpawnAgentInThread(command, text, channelID, threadTS)
+			// Set up streaming updater that edits the "thinking..." message in-place
+			updater := NewStreamingSlackUpdater(channelID, threadTS)
+
+			// Run the agent with streaming and tie the session to this thread
+			result, err := manager.SpawnAgentInThreadStreaming(command, text, channelID, threadTS, updater.Update)
 			if err != nil {
 				result = fmt.Sprintf("Agent error: %v", err)
 			}
 
-			// Update the thread message with the real result
-			Client.PostMessage(channelID,
-				slackapi.MsgOptionText(result, false),
-				slackapi.MsgOptionTS(threadTS),
+			// Final update: replace the message with the complete result
+			finalText := result
+			if len(finalText) > 3000 {
+				finalText = finalText[:2950] + "\n\n_...response truncated_"
+			}
+			Client.UpdateMessage(channelID,
+				threadTS,
+				slackapi.MsgOptionText(finalText, false),
 				slackapi.MsgOptionUsername(BotDisplayName),
 			)
 		}()
