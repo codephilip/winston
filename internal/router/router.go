@@ -15,6 +15,7 @@ import (
 
 	"github.com/polymr/polymr/internal/agents"
 	"github.com/polymr/polymr/internal/kali"
+	"github.com/polymr/polymr/internal/notify"
 	"github.com/polymr/polymr/internal/slack"
 	"github.com/polymr/polymr/internal/voice"
 )
@@ -80,7 +81,7 @@ func New() http.Handler {
 
 	// Frontend proxy (personal.polymr.io → Next.js on :3000, behind basic auth)
 	nextjsURL, _ := url.Parse("http://localhost:3000")
-	frontendProxy := httputil.NewSingleHostReverseProxy(nextjsURL)
+	frontendProxy := notify.WrapFrontendProxy(httputil.NewSingleHostReverseProxy(nextjsURL))
 
 	// Host-based routing: split traffic by hostname
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
