@@ -194,6 +194,19 @@ func (m *Manager) AgentNames() []string {
 	return names
 }
 
+// Status returns a snapshot of agent, session, and schedule counts.
+func (m *Manager) Status() (agents int, sessions int, schedules int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	active := 0
+	for _, s := range m.schedules {
+		if s.Status == "active" {
+			active++
+		}
+	}
+	return len(m.agents), len(m.sessions), active
+}
+
 // SpawnAgent starts a new session for the given agent and prompt.
 // Returns the response text and the Slack thread TS to use as session key.
 func (m *Manager) SpawnAgent(agentName, prompt string) (string, error) {

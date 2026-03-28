@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"net/http/httputil"
 	"net/url"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -19,6 +21,8 @@ import (
 	"github.com/polymr/polymr/internal/slack"
 	"github.com/polymr/polymr/internal/voice"
 )
+
+var startTime = time.Now()
 
 // SecurityHeaders adds standard security headers to every response.
 func SecurityHeaders(next http.Handler) http.Handler {
@@ -51,7 +55,27 @@ func New() http.Handler {
 	}))
 
 	api.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"status":"ok"}`))
+		agentCount, sessionCount, scheduleCount := manager.Status()
+
+		frontendStatus := "ok"
+		conn, err := net.DialTimeout("tcp", "localhost:3000", 2*time.Second)
+		if err != nil {
+			frontendStatus = "unreachable"
+		} else {
+			conn.Close()
+		}
+
+		uptime := time.Since(startTime).Truncate(time.Second)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "ok",
+			"uptime":           uptime.String(),
+			"frontend":         frontendStatus,
+			"agents":           agentCount,
+			"active_sessions":  sessionCount,
+			"active_schedules": scheduleCount,
+		})
 	})
 
 	// Slack endpoints (verified by signing secret, no basic auth)
