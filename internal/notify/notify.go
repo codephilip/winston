@@ -94,6 +94,12 @@ func FrontendRecovered() {
 	}
 }
 
+// ModelChange sends a notification that an agent's model was changed and services are restarting.
+func ModelChange(agent, oldModel, newModel string) {
+	post(fmt.Sprintf(":arrows_counterclockwise: Agent `%s` model changed: *%s* → *%s* on `%s` — restarting services",
+		agent, oldModel, newModel, hostname))
+}
+
 // WrapFrontendProxy wraps an httputil.ReverseProxy to detect frontend failures
 // and send debounced Slack notifications.
 func WrapFrontendProxy(proxy http.Handler) http.Handler {

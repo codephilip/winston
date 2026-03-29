@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
-	"strings"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -93,6 +97,7 @@ func New() http.Handler {
 		r.Use(BasicAuth)
 		r.Get("/agents", manager.ListAgents)
 		r.Post("/agents/{agent}/run", manager.RunAgent)
+		r.Put("/agents/{agent}/model", handleModelUpdate(manager))
 		r.Get("/agents/{agent}/sessions/{session}", manager.GetSession)
 		r.Post("/agents/{agent}/sessions/{session}/message", manager.SendMessage)
 		r.Get("/schedules", manager.ListSchedules)
@@ -201,6 +206,72 @@ func handleVoiceSynthesize(vc *voice.Client) http.HandlerFunc {
 		w.Header().Set("Content-Type", "audio/mpeg")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(audioBytes)))
 		w.Write(audioBytes)
+	}
+}
+
+// handleModelUpdate wraps the model update endpoint with Slack notification and service restart.
+func handleModelUpdate(manager *agents.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Capture response to check if the model actually changed
+		rec := &responseBuffer{header: http.Header{}, code: http.StatusOK}
+		manager.UpdateAgentModel(rec, r)
+
+		// Copy response to the real writer
+		for k, v := range rec.header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(rec.code)
+		w.Write(rec.body)
+
+		// If model changed, notify and restart
+		var result struct {
+			Agent    string `json:"agent"`
+			OldModel string `json:"old_model"`
+			NewModel string `json:"new_model"`
+			Changed  bool   `json:"changed"`
+		}
+		if json.Unmarshal(rec.body, &result) == nil && result.Changed {
+			notify.ModelChange(result.Agent, result.OldModel, result.NewModel)
+
+			// Restart services asynchronously so the response is sent first
+			go func() {
+				time.Sleep(1 * time.Second)
+				restartServices()
+			}()
+		}
+	}
+}
+
+// responseBuffer captures an HTTP response for inspection before forwarding.
+type responseBuffer struct {
+	header http.Header
+	code   int
+	body   []byte
+}
+
+func (rb *responseBuffer) Header() http.Header       { return rb.header }
+func (rb *responseBuffer) WriteHeader(code int)       { rb.code = code }
+func (rb *responseBuffer) Write(b []byte) (int, error) { rb.body = append(rb.body, b...); return len(b), nil }
+
+// restartServices rebuilds and restarts the Go router and Next.js frontend via launchctl.
+func restartServices() {
+	projectDir := filepath.Dir(filepath.Dir(os.Args[0])) // bin/polymr → project root
+	// Fall back to well-known project path if binary isn't in bin/
+	if _, err := os.Stat(filepath.Join(projectDir, "go.mod")); err != nil {
+		home := os.Getenv("HOME")
+		projectDir = filepath.Join(home, "projects", "winston")
+	}
+
+	script := filepath.Join(projectDir, "scripts", "restart.sh")
+	log.Printf("[router] triggering service restart via %s", script)
+
+	cmd := exec.Command("bash", script)
+	cmd.Dir = projectDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[router] restart failed: %v\n%s", err, string(output))
+	} else {
+		log.Printf("[router] restart completed")
 	}
 }
 

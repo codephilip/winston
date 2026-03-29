@@ -729,6 +729,73 @@ func (m *Manager) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(sched)
 }
 
+// validModels are the allowed model values for agent configuration.
+var validModels = map[string]bool{"opus": true, "sonnet": true, "haiku": true}
+
+// UpdateModel changes the model in an agent's .md file and reloads the in-memory config.
+// Returns the old model name for notification purposes.
+func (m *Manager) UpdateModel(agentName, newModel string) (oldModel string, err error) {
+	if !validModels[newModel] {
+		return "", fmt.Errorf("invalid model %q (must be opus, sonnet, or haiku)", newModel)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	agent, ok := m.agents[agentName]
+	if !ok {
+		return "", fmt.Errorf("agent %q not found", agentName)
+	}
+
+	oldModel = agent.Model
+	if oldModel == newModel {
+		return oldModel, nil
+	}
+
+	// Rewrite the .md file with the new model
+	path := filepath.Join(os.Getenv("HOME"), ".claude", "agents", agentName+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read agent file: %w", err)
+	}
+
+	content := string(data)
+	// Replace the model line in frontmatter
+	lines := strings.Split(content, "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "model:") {
+			lines[i] = "model: " + newModel
+			found = true
+			break
+		}
+		// Stop searching after closing frontmatter delimiter
+		if i > 0 && trimmed == "---" {
+			break
+		}
+	}
+	if !found {
+		// Insert model line before the closing ---
+		for i, line := range lines {
+			if i > 0 && strings.TrimSpace(line) == "---" {
+				lines = append(lines[:i], append([]string{"model: " + newModel}, lines[i:]...)...)
+				break
+			}
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+		return "", fmt.Errorf("write agent file: %w", err)
+	}
+
+	// Update in-memory config
+	agent.Model = newModel
+	log.Printf("[agents] updated %s model: %s → %s", agentName, oldModel, newModel)
+
+	return oldModel, nil
+}
+
 // parseModelOverride checks if the prompt starts with a model name prefix.
 // e.g. "opus: write me a campaign" → model="opus", prompt="write me a campaign"
 func parseModelOverride(prompt, defaultModel string) (string, string) {
@@ -787,6 +854,43 @@ func formatToolStatus(toolName string, rawInput json.RawMessage) string {
 	}
 
 	return fmt.Sprintf("_:gear: %s..._", label)
+}
+
+func (m *Manager) UpdateAgentModel(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agent")
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	oldModel, err := m.UpdateModel(agentID, req.Model)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "invalid model") {
+			status = http.StatusBadRequest
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	changed := oldModel != req.Model
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"agent":     agentID,
+		"old_model": oldModel,
+		"new_model": req.Model,
+		"changed":   changed,
+		"restart":   changed,
+	})
 }
 
 func (m *Manager) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
