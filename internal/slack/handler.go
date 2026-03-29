@@ -117,7 +117,7 @@ func HandleSlashCommand(manager *agents.Manager) http.HandlerFunc {
 
 			result, err := manager.SpawnAgentInThreadStreaming(command, sanitizedText, channelID, threadTS, updater.Update)
 			if err != nil {
-				result = fmt.Sprintf("Agent error: %v", err)
+				result = formatAgentError(command, err)
 			}
 
 			finalText := result
@@ -278,7 +278,7 @@ func handleMention(manager *agents.Manager, text, channel, threadTS string) {
 		result, found, err := manager.ContinueThreadStreaming(threadTS, prompt, updater.Update)
 		if err != nil {
 			Client.UpdateMessage(channel, msgTS,
-				slackapi.MsgOptionText(fmt.Sprintf("Error: %v", err), false),
+				slackapi.MsgOptionText(formatAgentError("session", err), false),
 				slackapi.MsgOptionUsername(BotDisplayName),
 			)
 			return
@@ -316,10 +316,11 @@ func handleMention(manager *agents.Manager, text, channel, threadTS string) {
 
 	result, err := manager.SpawnAgent(agentName, sanitize.Input(agentPrompt))
 	if err != nil {
+		errMsg := formatAgentError(agentName, err)
 		if threadTS != "" {
-			PostThreadReply(channel, threadTS, fmt.Sprintf("Agent error: %v", err))
+			PostThreadReply(channel, threadTS, errMsg)
 		} else {
-			PostMessage(channel, fmt.Sprintf("Agent error: %v", err))
+			PostMessage(channel, errMsg)
 		}
 		return
 	}
@@ -353,7 +354,7 @@ func handleThreadMessage(manager *agents.Manager, text, channel, threadTS string
 	if err != nil {
 		log.Printf("[slack] continue thread error: %v", err)
 		Client.UpdateMessage(channel, msgTS,
-			slackapi.MsgOptionText(fmt.Sprintf("Error: %v", err), false),
+			slackapi.MsgOptionText(formatAgentError("session", err), false),
 			slackapi.MsgOptionUsername(BotDisplayName),
 		)
 		return
@@ -382,13 +383,44 @@ func truncate(s string, n int) string {
 	return s[:n] + "..."
 }
 
+// formatAgentError returns a Slack-friendly error message for agent failures.
+func formatAgentError(agentName string, err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "timed out after"):
+		return fmt.Sprintf(":hourglass: */%s timed out.* The agent hit its time limit before finishing. You can retry with a simpler prompt or increase the timeout.", agentName)
+	case strings.Contains(msg, "max turns"):
+		return fmt.Sprintf(":warning: */%s hit its turn limit.* The agent used all %s conversation turns without finishing — this usually means it got stuck in a loop. Try a more specific prompt.", agentName, extractTurns(msg))
+	case strings.Contains(msg, "not found"):
+		return fmt.Sprintf(":x: Agent `%s` is not registered. Available agents: check `/help`.", agentName)
+	case strings.Contains(msg, "signal: killed"):
+		return fmt.Sprintf(":octagonal_sign: */%s was killed.* The process was terminated — likely due to memory limits or a service restart.", agentName)
+	default:
+		// Truncate raw errors to keep Slack tidy
+		if len(msg) > 500 {
+			msg = msg[:500] + "..."
+		}
+		return fmt.Sprintf(":x: */%s failed:*\n```%s```", agentName, msg)
+	}
+}
+
+func extractTurns(msg string) string {
+	// Try to extract the number from "max turns (50)"
+	if i := strings.Index(msg, "("); i >= 0 {
+		if j := strings.Index(msg[i:], ")"); j >= 0 {
+			return msg[i+1 : i+j]
+		}
+	}
+	return "its"
+}
+
 // handleTopicSelection processes when a user clicks a YouTube topic button.
 func handleTopicSelection(manager *agents.Manager, topicValue, channel string) {
 	prompt := fmt.Sprintf("The user selected topic: %q. Generate a full video script for this topic, including hooks, segments, and CTAs. Then generate a thumbnail using Nano Banana.", topicValue)
 
 	result, err := manager.SpawnAgent("youtube", sanitize.Input(prompt))
 	if err != nil {
-		PostMessage(channel, fmt.Sprintf("Error generating script: %v", err))
+		PostMessage(channel, formatAgentError("youtube", err))
 		return
 	}
 
@@ -405,7 +437,7 @@ func handleFollowUp(manager *agents.Manager, value, channel string) {
 
 	result, err := manager.SpawnAgent(agentName, sanitize.Input(prompt))
 	if err != nil {
-		PostMessage(channel, fmt.Sprintf("Error: %v", err))
+		PostMessage(channel, formatAgentError(agentName, err))
 		return
 	}
 	PostMessage(channel, result)
