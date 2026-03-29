@@ -59,7 +59,16 @@ func New() http.Handler {
 		AllowCredentials: true,
 	}))
 
-	api.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	// Slack endpoints (verified by signing secret, no basic auth)
+	api.Route("/slack", func(r chi.Router) {
+		r.Use(slack.VerifyMiddleware)
+		r.Post("/commands", slack.HandleSlashCommand(manager))
+		r.Post("/events", slack.HandleEvent(manager))
+		r.Post("/interactions", slack.HandleInteraction(manager))
+	})
+
+	// Health check handler (shared between root and /api)
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		agentCount, sessionCount, scheduleCount := manager.Status()
 
 		frontendStatus := "ok"
@@ -81,21 +90,16 @@ func New() http.Handler {
 			"active_sessions":  sessionCount,
 			"active_schedules": scheduleCount,
 		})
-	})
+	}
 
-	// Slack endpoints (verified by signing secret, no basic auth)
-	api.Route("/slack", func(r chi.Router) {
-		r.Use(slack.VerifyMiddleware)
-		r.Post("/commands", slack.HandleSlashCommand(manager))
-		r.Post("/events", slack.HandleEvent(manager))
-		r.Post("/interactions", slack.HandleInteraction(manager))
-	})
+	api.Get("/health", healthHandler)
 
 	// Protected API endpoints
 	api.Route("/api", func(r chi.Router) {
 		r.Use(RateLimitAuth)
 		r.Use(AuditLog)
 		r.Use(BasicAuth)
+		r.Get("/health", healthHandler)
 		r.Get("/agents", manager.ListAgents)
 		r.Post("/agents/{agent}/run", manager.RunAgent)
 		r.Put("/agents/{agent}/model", handleModelUpdate(manager))
