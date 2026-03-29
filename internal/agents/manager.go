@@ -30,17 +30,23 @@ type AgentConfig struct {
 	Description  string        `json:"description"`
 	Model        string        `json:"model,omitempty"`
 	MaxTurns     int           `json:"max_turns,omitempty"`
+	Workspace    string        `json:"workspace,omitempty"`    // derived from name prefix (codephil-youtube → codephil)
+	ShortName    string        `json:"short_name,omitempty"`   // name without workspace prefix
+	Tools        []string      `json:"tools,omitempty"`        // tools/capabilities this agent uses
 	Timeout      time.Duration `json:"-"`
 	SystemPrompt string        `json:"-"` // body of the agent .md file
 }
 
 // agentConfigJSON is the JSON wire format for AgentConfig (timeout as integer seconds).
 type agentConfigJSON struct {
-	Name           string `json:"name"`
-	Description    string `json:"description"`
-	Model          string `json:"model,omitempty"`
-	MaxTurns       int    `json:"max_turns,omitempty"`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description"`
+	Model          string   `json:"model,omitempty"`
+	MaxTurns       int      `json:"max_turns,omitempty"`
+	Workspace      string   `json:"workspace,omitempty"`
+	ShortName      string   `json:"short_name,omitempty"`
+	Tools          []string `json:"tools,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
 func (a AgentConfig) MarshalJSON() ([]byte, error) {
@@ -49,6 +55,9 @@ func (a AgentConfig) MarshalJSON() ([]byte, error) {
 		Description:    a.Description,
 		Model:          a.Model,
 		MaxTurns:       a.MaxTurns,
+		Workspace:      a.Workspace,
+		ShortName:      a.ShortName,
+		Tools:          a.Tools,
 		TimeoutSeconds: int(a.Timeout.Seconds()),
 	})
 }
@@ -184,7 +193,58 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 		cfg.MaxTurns = 50
 	}
 	cfg.SystemPrompt = strings.TrimSpace(parts[1])
+
+	// Derive workspace from name prefix (codephil-youtube → workspace "codephil", short_name "youtube")
+	if i := strings.Index(cfg.Name, "-"); i > 0 {
+		cfg.Workspace = cfg.Name[:i]
+		cfg.ShortName = cfg.Name[i+1:]
+	} else {
+		cfg.ShortName = cfg.Name
+	}
+
+	// Auto-detect tools from system prompt
+	cfg.Tools = detectTools(cfg.SystemPrompt)
+
 	return cfg, nil
+}
+
+// detectTools scans a system prompt for known tool/capability references.
+func detectTools(prompt string) []string {
+	lower := strings.ToLower(prompt)
+	var tools []string
+	seen := map[string]bool{}
+
+	patterns := []struct {
+		keywords []string
+		label    string
+	}{
+		{[]string{"websearch", "web search", "web_search"}, "Web Search"},
+		{[]string{"webfetch", "web fetch", "web_fetch"}, "Web Fetch"},
+		{[]string{"git ", "github", "git push", "git pull"}, "Git"},
+		{[]string{"figma"}, "Figma"},
+		{[]string{"gmail", "google-workspace", "google workspace"}, "Google Workspace"},
+		{[]string{"slack"}, "Slack"},
+		{[]string{"yt-dlp", "youtube-trends", "transcript"}, "YouTube Data"},
+		{[]string{"gemini", "nanobanana", "nano banana", "image generation", "image-generation"}, "Image Gen"},
+		{[]string{"playwright"}, "Playwright"},
+		{[]string{"kali", "nmap", "metasploit", "burp"}, "Security Tools"},
+		{[]string{"remotion"}, "Remotion"},
+		{[]string{"manim"}, "Manim"},
+		{[]string{"google-trends", "google trends", "reddit-trends", "reddit trends"}, "Trend Analysis"},
+		{[]string{"spawn", "sub-agent", "subagent", "parallel"}, "Sub-Agents"},
+		{[]string{"cron", "schedule"}, "Scheduling"},
+	}
+
+	for _, p := range patterns {
+		for _, kw := range p.keywords {
+			if strings.Contains(lower, kw) && !seen[p.label] {
+				tools = append(tools, p.label)
+				seen[p.label] = true
+				break
+			}
+		}
+	}
+	return tools
 }
 
 // HasAgent checks if an agent is registered.
