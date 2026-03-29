@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 
 interface AgentInfo {
@@ -10,163 +10,283 @@ interface AgentInfo {
   workspace?: string;
   short_name?: string;
   tools?: string[];
+  system_prompt?: string;
 }
 
 interface HealthStatus {
   status: string;
   uptime: string;
-  frontend: string;
   agents: number;
   active_sessions: number;
   active_schedules: number;
 }
 
-interface Workspace {
-  name: string;
-  agents: AgentInfo[];
-}
-
-const AGENT_STYLES: Record<string, { icon: string; color: string }> = {
-  winston: { icon: "W", color: "bg-amber-500" },
-  marketing: { icon: "M", color: "bg-blue-500" },
-  pentester: { icon: "P", color: "bg-red-500" },
-  youtube: { icon: "Y", color: "bg-purple-500" },
-  designer: { icon: "D", color: "bg-emerald-500" },
-  research: { icon: "R", color: "bg-cyan-500" },
-  director: { icon: "Dr", color: "bg-orange-500" },
-  assets: { icon: "A", color: "bg-pink-500" },
-  deliver: { icon: "De", color: "bg-teal-500" },
-  social: { icon: "S", color: "bg-violet-500" },
-};
-
-function getStyle(agent: AgentInfo) {
-  return (
-    AGENT_STYLES[agent.short_name || agent.name] ||
-    AGENT_STYLES[agent.name] || {
-      icon: (agent.short_name || agent.name).charAt(0).toUpperCase(),
-      color: "bg-zinc-600",
-    }
-  );
-}
-
+/* ── tool badge colours ── */
 const TOOL_COLORS: Record<string, string> = {
-  "Web Search": "bg-sky-900/50 text-sky-300",
-  "Web Fetch": "bg-sky-900/50 text-sky-300",
-  Git: "bg-orange-900/50 text-orange-300",
-  Figma: "bg-purple-900/50 text-purple-300",
-  "Google Workspace": "bg-blue-900/50 text-blue-300",
-  Slack: "bg-green-900/50 text-green-300",
-  "YouTube Data": "bg-red-900/50 text-red-300",
-  "Image Gen": "bg-pink-900/50 text-pink-300",
-  Playwright: "bg-emerald-900/50 text-emerald-300",
-  "Security Tools": "bg-red-900/50 text-red-300",
-  Remotion: "bg-indigo-900/50 text-indigo-300",
-  Manim: "bg-amber-900/50 text-amber-300",
-  "Trend Analysis": "bg-cyan-900/50 text-cyan-300",
-  "Sub-Agents": "bg-violet-900/50 text-violet-300",
-  Scheduling: "bg-yellow-900/50 text-yellow-300",
+  "Web Search": "border-sky-800 text-sky-400",
+  "Web Fetch": "border-sky-800 text-sky-400",
+  Git: "border-orange-800 text-orange-400",
+  Figma: "border-purple-800 text-purple-400",
+  "Google Workspace": "border-blue-800 text-blue-400",
+  Slack: "border-green-800 text-green-400",
+  "YouTube Data": "border-red-800 text-red-400",
+  "Image Gen": "border-pink-800 text-pink-400",
+  Playwright: "border-emerald-800 text-emerald-400",
+  "Security Tools": "border-red-800 text-red-400",
+  Remotion: "border-indigo-800 text-indigo-400",
+  Manim: "border-amber-800 text-amber-400",
+  "Trend Analysis": "border-cyan-800 text-cyan-400",
+  "Sub-Agents": "border-violet-800 text-violet-400",
+  Scheduling: "border-yellow-800 text-yellow-400",
 };
+
+/* ── hierarchy node ── */
+interface TreeNode {
+  agent: AgentInfo;
+  children: TreeNode[];
+  depth: number;
+}
+
+function buildTree(agents: AgentInfo[], workspace: string | null): TreeNode[] {
+  if (workspace === null) {
+    // Personal workspace: winston at root, standalone agents as children
+    const orchestrator = agents.find((a) => a.name === "winston");
+    const standalone = agents.filter(
+      (a) => a.name !== "winston" && !a.workspace
+    );
+    if (!orchestrator) return standalone.map((a) => ({ agent: a, children: [], depth: 0 }));
+    return [
+      {
+        agent: orchestrator,
+        depth: 0,
+        children: standalone.map((a) => ({ agent: a, children: [], depth: 1 })),
+      },
+    ];
+  }
+  // Workspace: show pipeline chain
+  const wsAgents = agents
+    .filter((a) => a.workspace === workspace)
+    .sort((a, b) => {
+      // Try to order by known pipeline stages
+      const order = ["research", "director", "assets", "deliver"];
+      const ai = order.indexOf(a.short_name || "");
+      const bi = order.indexOf(b.short_name || "");
+      if (ai >= 0 && bi >= 0) return ai - bi;
+      if (ai >= 0) return -1;
+      if (bi >= 0) return 1;
+      return (a.short_name || a.name).localeCompare(b.short_name || b.name);
+    });
+  if (wsAgents.length === 0) return [];
+  // Chain: first agent is root, each subsequent is child of previous
+  let current: TreeNode = { agent: wsAgents[0], children: [], depth: 0 };
+  const root = current;
+  for (let i = 1; i < wsAgents.length; i++) {
+    const child: TreeNode = { agent: wsAgents[i], children: [], depth: i };
+    current.children = [child];
+    current = child;
+  }
+  return [root];
+}
+
+/* ── components ── */
 
 function ToolBadge({ tool }: { tool: string }) {
-  const color = TOOL_COLORS[tool] || "bg-zinc-800 text-zinc-400";
+  const color = TOOL_COLORS[tool] || "border-zinc-700 text-zinc-500";
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${color}`}>
+    <span
+      className={`inline-block rounded border px-1.5 py-px text-[10px] leading-tight ${color}`}
+    >
       {tool}
     </span>
   );
 }
 
-function AgentCard({ agent, compact }: { agent: AgentInfo; compact?: boolean }) {
-  const style = getStyle(agent);
+function TreeNodeRow({
+  node,
+  expandedAgent,
+  onToggle,
+  isLast,
+}: {
+  node: TreeNode;
+  expandedAgent: string | null;
+  onToggle: (name: string) => void;
+  isLast: boolean;
+}) {
+  const { agent, children, depth } = node;
+  const isExpanded = expandedAgent === agent.name;
+  const hasChildren = children.length > 0;
   const displayName = agent.short_name || agent.name;
 
   return (
-    <Link
-      href={`/agents/${agent.name}`}
-      className={`group relative rounded-xl border border-zinc-800 bg-zinc-900 transition-all hover:border-zinc-600 hover:bg-zinc-800/80 ${compact ? "p-4" : "p-5"}`}
-    >
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div
-            className={`flex ${compact ? "h-9 w-9 text-sm" : "h-10 w-10 text-base"} items-center justify-center rounded-lg ${style.color} font-bold`}
-          >
-            {style.icon}
+    <div>
+      {/* node row */}
+      <div className="flex items-stretch">
+        {/* tree lines */}
+        {depth > 0 && (
+          <div className="flex" style={{ width: depth * 32 }}>
+            {Array.from({ length: depth }).map((_, i) => (
+              <div key={i} className="flex w-8 justify-center">
+                {i === depth - 1 ? (
+                  <div className="relative w-8">
+                    <div
+                      className={`absolute left-1/2 top-0 w-px bg-zinc-800 ${isLast ? "h-1/2" : "h-full"}`}
+                    />
+                    <div className="absolute left-1/2 top-1/2 h-px w-4 bg-zinc-800" />
+                  </div>
+                ) : (
+                  <div className="w-px bg-zinc-800" />
+                )}
+              </div>
+            ))}
           </div>
-          <div>
-            <h3 className={`font-semibold capitalize group-hover:text-white ${compact ? "text-sm" : "text-base"}`}>
-              {displayName}
-            </h3>
-          </div>
-        </div>
-        {agent.model && (
-          <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-500 group-hover:text-zinc-400">
-            {agent.model}
-          </span>
         )}
+
+        {/* agent card */}
+        <button
+          onClick={() => onToggle(agent.name)}
+          className={`group flex flex-1 items-center gap-4 rounded-lg border px-4 py-3 text-left transition-all ${
+            isExpanded
+              ? "border-zinc-600 bg-zinc-800/80"
+              : "border-zinc-800/50 bg-zinc-900/50 hover:border-zinc-700 hover:bg-zinc-800/40"
+          }`}
+        >
+          {/* model dot */}
+          <div className="flex flex-col items-center gap-0.5">
+            <span
+              className={`text-[10px] font-medium ${
+                agent.model === "opus"
+                  ? "text-amber-400"
+                  : agent.model === "haiku"
+                    ? "text-green-400"
+                    : "text-blue-400"
+              }`}
+            >
+              {agent.model}
+            </span>
+          </div>
+
+          {/* name + desc */}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold capitalize text-zinc-100">
+                {displayName}
+              </span>
+              {hasChildren && (
+                <span className="text-[10px] text-zinc-600">
+                  → {children.length} agent{children.length > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            <p className="truncate text-xs text-zinc-500">
+              {agent.description}
+            </p>
+          </div>
+
+          {/* tools */}
+          <div className="hidden flex-wrap justify-end gap-1 sm:flex">
+            {(agent.tools || []).slice(0, 4).map((t) => (
+              <ToolBadge key={t} tool={t} />
+            ))}
+            {(agent.tools || []).length > 4 && (
+              <span className="text-[10px] text-zinc-600">
+                +{(agent.tools || []).length - 4}
+              </span>
+            )}
+          </div>
+
+          {/* expand indicator */}
+          <svg
+            className={`h-4 w-4 shrink-0 text-zinc-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        {/* chat link */}
+        <Link
+          href={`/agents/${agent.name}`}
+          className="ml-2 flex items-center rounded-lg border border-zinc-800/50 px-3 text-xs text-zinc-500 transition-all hover:border-zinc-600 hover:text-zinc-300"
+        >
+          Chat
+        </Link>
       </div>
-      {!compact && agent.description && (
-        <p className="mb-3 text-xs leading-relaxed text-zinc-500 line-clamp-2">
-          {agent.description}
-        </p>
-      )}
-      {agent.tools && agent.tools.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {agent.tools.map((tool) => (
-            <ToolBadge key={tool} tool={tool} />
-          ))}
+
+      {/* expanded detail */}
+      {isExpanded && (
+        <div className="mt-1 mb-1" style={{ marginLeft: depth * 32 }}>
+          <AgentDetail agent={agent} />
         </div>
       )}
-    </Link>
-  );
-}
 
-function PipelineConnector() {
-  return (
-    <div className="flex items-center justify-center py-1">
-      <div className="flex flex-col items-center">
-        <div className="h-4 w-px bg-gradient-to-b from-zinc-700 to-zinc-600" />
-        <svg className="h-3 w-3 text-zinc-600" viewBox="0 0 12 12" fill="currentColor">
-          <path d="M6 9L1 4h10L6 9z" />
-        </svg>
-      </div>
+      {/* children */}
+      {children.map((child, i) => (
+        <div key={child.agent.name} className="mt-1">
+          <TreeNodeRow
+            node={child}
+            expandedAgent={expandedAgent}
+            onToggle={onToggle}
+            isLast={i === children.length - 1}
+          />
+        </div>
+      ))}
     </div>
   );
 }
 
-function WorkspaceSection({ workspace }: { workspace: Workspace }) {
-  const isPipeline = workspace.agents.length > 1;
+function AgentDetail({ agent }: { agent: AgentInfo }) {
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/agents/${agent.name}`)
+      .then((r) => r.json())
+      .then((data) => setPrompt(data.system_prompt || "(no system prompt)"))
+      .catch(() => setPrompt("(failed to load)"))
+      .finally(() => setLoading(false));
+  }, [agent.name]);
 
   return (
-    <div className="rounded-2xl border border-zinc-800/50 bg-zinc-900/30 p-6">
-      <div className="mb-4 flex items-center gap-3">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-zinc-700 to-zinc-800 text-xs font-bold uppercase text-zinc-300">
-          {workspace.name.charAt(0)}
-        </div>
-        <div>
-          <h3 className="text-lg font-bold capitalize">{workspace.name}</h3>
-          <p className="text-xs text-zinc-500">
-            {workspace.agents.length} agent{workspace.agents.length > 1 ? "s" : ""}
-            {isPipeline ? " · pipeline" : ""}
-          </p>
-        </div>
-      </div>
-
-      {isPipeline ? (
-        <div className="space-y-0">
-          {workspace.agents.map((agent, i) => (
-            <div key={agent.name}>
-              <AgentCard agent={agent} compact />
-              {i < workspace.agents.length - 1 && <PipelineConnector />}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2">
-          {workspace.agents.map((agent) => (
-            <AgentCard key={agent.name} agent={agent} />
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900/80 p-4">
+      {/* tools - full list on mobile */}
+      {agent.tools && agent.tools.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1">
+          {agent.tools.map((t) => (
+            <ToolBadge key={t} tool={t} />
           ))}
         </div>
       )}
+
+      {/* meta */}
+      <div className="mb-3 flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-500">
+        <span>
+          Model: <span className="text-zinc-300">{agent.model}</span>
+        </span>
+        {agent.workspace && (
+          <span>
+            Workspace:{" "}
+            <span className="text-zinc-300">{agent.workspace}</span>
+          </span>
+        )}
+      </div>
+
+      {/* system prompt */}
+      <div className="rounded-md bg-zinc-950 p-3">
+        <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-zinc-600">
+          System Prompt
+        </p>
+        {loading ? (
+          <p className="text-xs text-zinc-600">Loading…</p>
+        ) : (
+          <pre className="max-h-80 overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-zinc-400">
+            {prompt}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }
@@ -175,6 +295,8 @@ export default function Home() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [serviceUp, setServiceUp] = useState<boolean | null>(null);
+  const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
+  const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
 
   useEffect(() => {
     async function fetchData() {
@@ -199,61 +321,79 @@ export default function Home() {
     fetchData();
   }, []);
 
-  // Separate orchestrator, standalone agents, and workspace groups
-  const orchestrator = agents.find((a) => a.name === "winston");
-  const standaloneAgents = agents.filter(
-    (a) => a.name !== "winston" && !a.workspace
+  const toggleAgent = useCallback(
+    (name: string) => setExpandedAgent((prev) => (prev === name ? null : name)),
+    []
   );
-  const workspaceMap = new Map<string, AgentInfo[]>();
-  for (const agent of agents) {
-    if (agent.workspace) {
-      const list = workspaceMap.get(agent.workspace) || [];
-      list.push(agent);
-      workspaceMap.set(agent.workspace, list);
-    }
-  }
-  const workspaces: Workspace[] = Array.from(workspaceMap.entries()).map(
-    ([name, ws]) => ({ name, agents: ws })
-  );
+
+  // Derive workspaces
+  const workspaceNames = [
+    ...new Set(agents.filter((a) => a.workspace).map((a) => a.workspace!)),
+  ].sort();
+
+  const tree = buildTree(agents, activeWorkspace);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
-      <header className="border-b border-zinc-800 px-6 py-4">
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-2xl font-bold tracking-tight">Winston</h1>
+      <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/90 px-6 py-3 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
+          <div className="flex items-center gap-5">
+            <h1 className="text-lg font-bold tracking-tight">Winston</h1>
+
+            {/* workspace tabs */}
+            <nav className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+              <button
+                onClick={() => { setActiveWorkspace(null); setExpandedAgent(null); }}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                  activeWorkspace === null
+                    ? "bg-zinc-700 text-white"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                Personal
+              </button>
+              {workspaceNames.map((ws) => (
+                <button
+                  key={ws}
+                  onClick={() => { setActiveWorkspace(ws); setExpandedAgent(null); }}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium capitalize transition-all ${
+                    activeWorkspace === ws
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {ws}
+                </button>
+              ))}
+            </nav>
+
+            {/* health dot */}
             {serviceUp !== null && (
               <div className="flex items-center gap-2">
                 <span
-                  className={`inline-block h-2 w-2 rounded-full ${serviceUp ? "bg-green-500" : "bg-red-500"}`}
+                  className={`h-1.5 w-1.5 rounded-full ${serviceUp ? "bg-green-500" : "bg-red-500"}`}
                 />
-                {health && (
-                  <span className="text-xs text-zinc-500">
-                    {health.agents} agents &middot; {health.uptime} uptime
-                    {health.active_sessions > 0 &&
-                      ` · ${health.active_sessions} sessions`}
-                    {health.active_schedules > 0 &&
-                      ` · ${health.active_schedules} schedules`}
+                {health ? (
+                  <span className="text-[11px] text-zinc-600">
+                    {health.uptime}
                   </span>
-                )}
-                {serviceUp === false && (
-                  <span className="text-xs text-red-400">
-                    Service unreachable
-                  </span>
-                )}
+                ) : serviceUp === false ? (
+                  <span className="text-[11px] text-red-500">offline</span>
+                ) : null}
               </div>
             )}
           </div>
-          <nav className="flex gap-3">
+
+          <nav className="flex gap-2">
             <Link
               href="/voice"
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700"
+              className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700"
             >
               Voice
             </Link>
             <Link
               href="/schedules"
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700"
+              className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700"
             >
               Schedules
             </Link>
@@ -261,75 +401,29 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-10">
-        {/* Orchestrator */}
-        {orchestrator && (
-          <section className="mb-10">
-            <h2 className="mb-1 text-xs font-medium uppercase tracking-widest text-zinc-500">
-              Orchestrator
-            </h2>
-            <div className="mt-3">
-              <Link
-                href={`/agents/${orchestrator.name}`}
-                className="group flex items-start gap-5 rounded-xl border border-zinc-800 bg-zinc-900 p-6 transition-all hover:border-amber-500/40 hover:bg-zinc-800/80"
-              >
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 text-xl font-bold shadow-lg shadow-amber-500/20">
-                  W
-                </div>
-                <div className="flex-1">
-                  <div className="mb-1 flex items-center gap-3">
-                    <h3 className="text-xl font-bold group-hover:text-amber-400">
-                      Winston
-                    </h3>
-                    {orchestrator.model && (
-                      <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
-                        {orchestrator.model}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mb-3 text-sm text-zinc-400">
-                    {orchestrator.description}
-                  </p>
-                  {orchestrator.tools && orchestrator.tools.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {orchestrator.tools.map((tool) => (
-                        <ToolBadge key={tool} tool={tool} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </Link>
-            </div>
-          </section>
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        {agents.length === 0 && serviceUp !== false && (
+          <p className="py-20 text-center text-sm text-zinc-600">
+            Loading agents…
+          </p>
+        )}
+        {serviceUp === false && (
+          <p className="py-20 text-center text-sm text-red-500/80">
+            Service unreachable — is the router running?
+          </p>
         )}
 
-        {/* Workspaces */}
-        {workspaces.length > 0 && (
-          <section className="mb-10">
-            <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-zinc-500">
-              Workspaces
-            </h2>
-            <div className="grid gap-6 lg:grid-cols-2">
-              {workspaces.map((ws) => (
-                <WorkspaceSection key={ws.name} workspace={ws} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* Standalone Agents */}
-        {standaloneAgents.length > 0 && (
-          <section>
-            <h2 className="mb-4 text-xs font-medium uppercase tracking-widest text-zinc-500">
-              Agents
-            </h2>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {standaloneAgents.map((agent) => (
-                <AgentCard key={agent.name} agent={agent} />
-              ))}
-            </div>
-          </section>
-        )}
+        <div className="space-y-1">
+          {tree.map((node, i) => (
+            <TreeNodeRow
+              key={node.agent.name}
+              node={node}
+              expandedAgent={expandedAgent}
+              onToggle={toggleAgent}
+              isLast={i === tree.length - 1}
+            />
+          ))}
+        </div>
       </main>
     </div>
   );
