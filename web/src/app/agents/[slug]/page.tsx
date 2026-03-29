@@ -10,16 +10,65 @@ interface Message {
   timestamp: Date;
 }
 
+const MODELS = ["haiku", "sonnet", "opus"] as const;
+type Model = (typeof MODELS)[number];
+
 export default function AgentChat() {
   const { slug } = useParams<{ slug: string }>();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState<Model | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
   const messagesEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    async function fetchModel() {
+      try {
+        const res = await fetch("/api/agents");
+        const agents = await res.json();
+        const agent = agents.find((a: { name: string }) => a.name === slug);
+        if (agent?.model) setModel(agent.model);
+      } catch {
+        // router not running
+      }
+    }
+    fetchModel();
+  }, [slug]);
+
+  async function changeModel(newModel: Model) {
+    if (newModel === model || modelLoading) return;
+    setModelLoading(true);
+    try {
+      const res = await fetch(`/api/agents/${slug}/model`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: newModel }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setModel(data.new_model);
+        if (data.restart) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: "assistant",
+              content: `Model changed to ${data.new_model}. Services are restarting — this may take a moment.`,
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      }
+    } catch {
+      // connection error
+    } finally {
+      setModelLoading(false);
+    }
+  }
 
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
@@ -66,11 +115,31 @@ export default function AgentChat() {
   return (
     <div className="flex min-h-screen flex-col bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
-        <div className="mx-auto flex max-w-4xl items-center gap-4">
-          <Link href="/" className="text-zinc-400 hover:text-white">
-            &larr;
-          </Link>
-          <h1 className="text-xl font-bold capitalize">/{slug}</h1>
+        <div className="mx-auto flex max-w-4xl items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link href="/" className="text-zinc-400 hover:text-white">
+              &larr;
+            </Link>
+            <h1 className="text-xl font-bold capitalize">/{slug}</h1>
+          </div>
+          {model && (
+            <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+              {MODELS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => changeModel(m)}
+                  disabled={modelLoading}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all ${
+                    model === m
+                      ? "bg-zinc-700 text-white"
+                      : "text-zinc-500 hover:text-zinc-300"
+                  } ${modelLoading ? "opacity-50" : ""}`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </header>
 
