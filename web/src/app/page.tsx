@@ -1,3 +1,6 @@
+"use client";
+
+import { useState, useEffect } from "react";
 import Link from "next/link";
 
 const orchestrator = {
@@ -9,7 +12,7 @@ const orchestrator = {
   color: "bg-amber-500",
 };
 
-const agents = [
+const agentDefaults = [
   {
     name: "Marketing",
     slug: "marketing",
@@ -44,7 +47,31 @@ const agents = [
   },
 ];
 
+interface AgentInfo {
+  name: string;
+  model?: string;
+}
+
 export default function Home() {
+  const [models, setModels] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    async function fetchAgents() {
+      try {
+        const res = await fetch("/api/agents");
+        const agents: AgentInfo[] = await res.json();
+        const map: Record<string, string> = {};
+        for (const a of agents) {
+          if (a.model) map[a.name] = a.model;
+        }
+        setModels(map);
+      } catch {
+        // router not running
+      }
+    }
+    fetchAgents();
+  }, []);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
@@ -84,10 +111,17 @@ export default function Home() {
             >
               {orchestrator.icon}
             </div>
-            <div>
-              <h3 className="mb-1 text-xl font-semibold group-hover:text-amber-400">
-                {orchestrator.name}
-              </h3>
+            <div className="flex-1">
+              <div className="mb-1 flex items-center gap-3">
+                <h3 className="text-xl font-semibold group-hover:text-amber-400">
+                  {orchestrator.name}
+                </h3>
+                {models[orchestrator.slug] && (
+                  <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+                    {models[orchestrator.slug]}
+                  </span>
+                )}
+              </div>
               <p className="text-sm text-zinc-400">
                 {orchestrator.description}
               </p>
@@ -103,16 +137,23 @@ export default function Home() {
             Winston delegate.
           </p>
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-            {agents.map((agent) => (
+            {agentDefaults.map((agent) => (
               <Link
                 key={agent.slug}
                 href={`/agents/${agent.slug}`}
                 className="group rounded-xl border border-zinc-800 bg-zinc-900 p-6 transition-all hover:border-zinc-600 hover:bg-zinc-800"
               >
-                <div
-                  className={`mb-4 flex h-12 w-12 items-center justify-center rounded-lg ${agent.color} text-lg font-bold`}
-                >
-                  {agent.icon}
+                <div className="mb-4 flex items-center justify-between">
+                  <div
+                    className={`flex h-12 w-12 items-center justify-center rounded-lg ${agent.color} text-lg font-bold`}
+                  >
+                    {agent.icon}
+                  </div>
+                  {models[agent.slug] && (
+                    <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-500">
+                      {models[agent.slug]}
+                    </span>
+                  )}
                 </div>
                 <h3 className="mb-2 text-xl font-semibold group-hover:text-white">
                   {agent.name}
