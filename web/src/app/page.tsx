@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import ReactMarkdown from "react-markdown";
 
 /* ── types ── */
 
@@ -50,16 +51,11 @@ const MODEL_COLORS: Record<string, string> = {
 
 /* ── helpers ── */
 
-function getAgentDisplayName(a: AgentInfo) {
-  return a.short_name || a.name;
-}
-
 function buildHierarchy(
   agents: AgentInfo[],
   workspace: string | null
 ): AgentInfo[][] {
   if (workspace === null) {
-    // Personal: orchestrator first, then standalone agents as flat list
     const orch = agents.find((a) => a.name === "winston");
     const standalone = agents.filter(
       (a) => a.name !== "winston" && !a.workspace
@@ -69,7 +65,6 @@ function buildHierarchy(
     if (standalone.length) rows.push(standalone);
     return rows;
   }
-  // Workspace: order pipeline, return as single row per stage
   const wsAgents = agents.filter((a) => a.workspace === workspace);
   const order = ["research", "director", "assets", "deliver"];
   wsAgents.sort((a, b) => {
@@ -83,12 +78,12 @@ function buildHierarchy(
   return wsAgents.map((a) => [a]);
 }
 
-/* ── components ── */
+/* ── small components ── */
 
 function ToolBadge({ tool }: { tool: string }) {
   const color = TOOL_COLORS[tool] || "text-zinc-400 bg-zinc-900";
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${color}`}>
+    <span className={`rounded px-2 py-0.5 text-[11px] font-medium leading-none ${color}`}>
       {tool}
     </span>
   );
@@ -108,7 +103,8 @@ function WorkspaceDropdown({
 
   useEffect(() => {
     function close(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     }
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
@@ -120,12 +116,12 @@ function WorkspaceDropdown({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm font-medium capitalize transition-colors hover:border-zinc-700"
+        className="flex items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2 text-sm font-medium capitalize transition-colors hover:border-zinc-700"
       >
-        <span className="h-2 w-2 rounded-full bg-gradient-to-br from-blue-400 to-violet-500" />
+        <span className="h-2.5 w-2.5 rounded-full bg-gradient-to-br from-blue-400 to-violet-500" />
         {label}
         <svg
-          className={`h-3.5 w-3.5 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`h-4 w-4 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -135,29 +131,33 @@ function WorkspaceDropdown({
         </svg>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl shadow-black/40">
-          <button
-            onClick={() => { onChange(null); setOpen(false); }}
-            className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm transition-colors hover:bg-zinc-800 ${active === null ? "bg-zinc-800/60 text-white" : "text-zinc-400"}`}
-          >
-            <span className="h-2 w-2 rounded-full bg-amber-500" />
-            Personal
-          </button>
-          {workspaces.map((ws) => (
+        <div className="absolute left-0 top-full z-20 mt-1.5 min-w-[200px] overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl shadow-black/50">
+          <div className="p-1">
             <button
-              key={ws}
-              onClick={() => { onChange(ws); setOpen(false); }}
-              className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm capitalize transition-colors hover:bg-zinc-800 ${active === ws ? "bg-zinc-800/60 text-white" : "text-zinc-400"}`}
+              onClick={() => { onChange(null); setOpen(false); }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-zinc-800 ${active === null ? "bg-zinc-800 text-white" : "text-zinc-400"}`}
             >
-              <span className="h-2 w-2 rounded-full bg-violet-500" />
-              {ws}
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+              Personal
             </button>
-          ))}
+            {workspaces.map((ws) => (
+              <button
+                key={ws}
+                onClick={() => { onChange(ws); setOpen(false); }}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm capitalize transition-colors hover:bg-zinc-800 ${active === ws ? "bg-zinc-800 text-white" : "text-zinc-400"}`}
+              >
+                <span className="h-2.5 w-2.5 rounded-full bg-violet-500" />
+                {ws}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+/* ── agent row ── */
 
 function AgentRow({
   agent,
@@ -170,68 +170,60 @@ function AgentRow({
   onToggle: () => void;
   depth: number;
 }) {
-  const name = getAgentDisplayName(agent);
+  const name = agent.short_name || agent.name;
 
   return (
     <div>
-      <div
-        className="flex items-center gap-3"
-        style={{ paddingLeft: depth * 24 }}
-      >
-        {/* depth indicator */}
+      <div className="flex items-center gap-3" style={{ paddingLeft: depth * 28 }}>
         {depth > 0 && (
-          <div className="flex h-5 w-5 items-center justify-center">
-            <svg className="h-3 w-3 text-zinc-700" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M2 0v6h10" />
-            </svg>
-          </div>
+          <svg className="h-4 w-4 shrink-0 text-zinc-700" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M3 1v7h10" />
+          </svg>
         )}
 
-        {/* main card */}
         <button
           onClick={onToggle}
-          className={`flex min-w-0 flex-1 items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all ${
+          className={`flex min-w-0 flex-1 items-center gap-4 rounded-xl border px-5 py-3.5 text-left transition-all ${
             isExpanded
               ? "border-zinc-700 bg-zinc-800/70"
               : "border-transparent bg-zinc-900/60 hover:bg-zinc-900"
           }`}
         >
-          {/* model badge */}
-          <span className={`shrink-0 text-[11px] font-semibold ${MODEL_COLORS[agent.model || "sonnet"] || "text-zinc-400"}`}>
+          <span className={`shrink-0 text-xs font-bold uppercase ${MODEL_COLORS[agent.model || "sonnet"] || "text-zinc-400"}`}>
             {agent.model}
           </span>
-
-          {/* name + desc */}
           <div className="min-w-0 flex-1">
-            <span className="font-semibold capitalize">{name}</span>
-            <p className="truncate text-xs text-zinc-500">{agent.description}</p>
+            <span className="text-[15px] font-semibold capitalize">{name}</span>
+            <p className="truncate text-sm text-zinc-500">{agent.description}</p>
           </div>
-
-          {/* tools (desktop) */}
-          <div className="hidden gap-1 lg:flex">
+          <div className="hidden gap-1.5 lg:flex">
             {(agent.tools || []).slice(0, 3).map((t) => (
               <ToolBadge key={t} tool={t} />
             ))}
             {(agent.tools || []).length > 3 && (
-              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-600">
+              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[11px] text-zinc-600">
                 +{(agent.tools || []).length - 3}
               </span>
             )}
           </div>
+          <svg
+            className={`h-4 w-4 shrink-0 text-zinc-600 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
         </button>
 
-        {/* chat link */}
         <Link
           href={`/agents/${agent.name}`}
-          className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs text-zinc-500 transition-all hover:border-zinc-600 hover:text-white"
+          className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-500 transition-all hover:border-zinc-600 hover:text-white"
         >
           Chat
         </Link>
       </div>
 
-      {/* expanded detail */}
       {isExpanded && (
-        <div style={{ paddingLeft: depth * 24 + (depth > 0 ? 32 : 0) }}>
+        <div className="mt-2" style={{ paddingLeft: depth * 28 + (depth > 0 ? 28 : 0) }}>
           <AgentDetail agent={agent} />
         </div>
       )}
@@ -239,12 +231,15 @@ function AgentRow({
   );
 }
 
+/* ── agent detail with pretty/raw toggle ── */
+
 function AgentDetail({ agent }: { agent: AgentInfo }) {
-  const [prompt, setPrompt] = useState<string>("");
-  const [original, setOriginal] = useState<string>("");
+  const [prompt, setPrompt] = useState("");
+  const [original, setOriginal] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [mode, setMode] = useState<"pretty" | "raw">("pretty");
 
   useEffect(() => {
     fetch(`/api/agents/${agent.name}`)
@@ -282,25 +277,46 @@ function AgentDetail({ agent }: { agent: AgentInfo }) {
   }
 
   return (
-    <div className="mt-2 mb-2 rounded-xl border border-zinc-800 bg-zinc-900/80 p-4">
+    <div className="mb-3 rounded-xl border border-zinc-800 bg-zinc-900/80 p-5">
       {/* tools */}
       {agent.tools && agent.tools.length > 0 && (
-        <div className="mb-3 flex flex-wrap gap-1.5">
+        <div className="mb-4 flex flex-wrap gap-1.5">
           {agent.tools.map((t) => (
             <ToolBadge key={t} tool={t} />
           ))}
         </div>
       )}
 
-      {/* editor */}
-      <div className="rounded-lg border border-zinc-800 bg-zinc-950">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-3 py-2">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-600">
-            {agent.name}.md
-          </span>
-          <div className="flex items-center gap-2">
+      {/* editor chrome */}
+      <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+        {/* toolbar */}
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
+          <div className="flex items-center gap-1 rounded-md bg-zinc-900 p-0.5">
+            <button
+              onClick={() => setMode("pretty")}
+              className={`rounded px-3 py-1 text-xs font-medium transition-all ${
+                mode === "pretty"
+                  ? "bg-zinc-800 text-white"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              Preview
+            </button>
+            <button
+              onClick={() => setMode("raw")}
+              className={`rounded px-3 py-1 text-xs font-medium transition-all ${
+                mode === "raw"
+                  ? "bg-zinc-800 text-white"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              Edit
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-zinc-600">{agent.name}.md</span>
             {saved && (
-              <span className="text-[11px] text-green-400">
+              <span className="text-xs font-medium text-green-400">
                 Saved — restarting…
               </span>
             )}
@@ -308,22 +324,28 @@ function AgentDetail({ agent }: { agent: AgentInfo }) {
               <button
                 onClick={save}
                 disabled={saving}
-                className="rounded-md bg-blue-600 px-3 py-1 text-[11px] font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+                className="rounded-lg bg-blue-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
               >
                 {saving ? "Saving…" : "Save & Restart"}
               </button>
             )}
           </div>
         </div>
+
+        {/* content */}
         {loading ? (
-          <p className="px-3 py-4 text-xs text-zinc-600">Loading…</p>
+          <p className="px-5 py-6 text-sm text-zinc-600">Loading…</p>
+        ) : mode === "pretty" ? (
+          <div className="markdown-body max-h-[560px] overflow-auto px-6 py-5">
+            <ReactMarkdown>{prompt}</ReactMarkdown>
+          </div>
         ) : (
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             spellCheck={false}
-            className="block w-full resize-y bg-transparent px-3 py-3 font-mono text-xs leading-relaxed text-zinc-300 placeholder-zinc-700 focus:outline-none"
-            rows={Math.min(Math.max(prompt.split("\n").length + 2, 8), 24)}
+            className="block w-full resize-y bg-transparent px-5 py-4 font-mono text-sm leading-relaxed text-zinc-300 placeholder-zinc-700 focus:outline-none"
+            rows={Math.min(Math.max(prompt.split("\n").length + 2, 10), 28)}
           />
         )}
       </div>
@@ -374,76 +396,66 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
-      {/* header */}
       <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/95 px-6 py-3 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-4xl items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-lg font-bold tracking-tight">Winston</h1>
-
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
+          <div className="flex items-center gap-5">
+            <h1 className="text-xl font-bold tracking-tight">Winston</h1>
             <WorkspaceDropdown
               workspaces={workspaceNames}
               active={activeWorkspace}
               onChange={(ws) => { setActiveWorkspace(ws); setExpandedAgent(null); }}
             />
-
             {serviceUp !== null && (
-              <div className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 rounded-full ${serviceUp ? "bg-green-500" : "bg-red-500"}`} />
+              <div className="flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${serviceUp ? "bg-green-500" : "bg-red-500"}`} />
                 {health ? (
-                  <span className="text-[11px] text-zinc-600">{health.uptime}</span>
+                  <span className="text-xs text-zinc-600">{health.uptime}</span>
                 ) : serviceUp === false ? (
-                  <span className="text-[11px] text-red-500">offline</span>
+                  <span className="text-xs text-red-500">offline</span>
                 ) : null}
               </div>
             )}
           </div>
           <nav className="flex gap-2">
-            <Link href="/voice" className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white">
+            <Link href="/voice" className="rounded-lg bg-zinc-900 px-4 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white">
               Voice
             </Link>
-            <Link href="/schedules" className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white">
+            <Link href="/schedules" className="rounded-lg bg-zinc-900 px-4 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-white">
               Schedules
             </Link>
           </nav>
         </div>
       </header>
 
-      {/* body */}
-      <main className="mx-auto max-w-4xl px-6 py-6">
+      <main className="mx-auto max-w-5xl px-6 py-8">
         {agents.length === 0 && serviceUp !== false && (
-          <p className="py-20 text-center text-sm text-zinc-600">Loading agents…</p>
+          <p className="py-20 text-center text-zinc-600">Loading agents…</p>
         )}
         {serviceUp === false && (
-          <p className="py-20 text-center text-sm text-red-500/80">
-            Service unreachable
-          </p>
+          <p className="py-20 text-center text-red-500/80">Service unreachable</p>
         )}
 
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {tiers.map((tier, tierIdx) => (
             <div key={tierIdx}>
-              {/* tier label for personal workspace */}
               {activeWorkspace === null && tierIdx === 0 && tier.length === 1 && (
-                <p className="mb-2 text-[10px] font-medium uppercase tracking-widest text-zinc-600">
+                <p className="mb-3 text-xs font-medium uppercase tracking-widest text-zinc-600">
                   Orchestrator
                 </p>
               )}
               {activeWorkspace === null && tierIdx === 1 && (
-                <p className="mb-2 mt-4 text-[10px] font-medium uppercase tracking-widest text-zinc-600">
+                <p className="mb-3 mt-6 text-xs font-medium uppercase tracking-widest text-zinc-600">
                   Agents
                 </p>
               )}
-
-              {/* pipeline arrow between workspace stages */}
               {activeWorkspace !== null && tierIdx > 0 && (
-                <div className="flex justify-center py-0.5">
-                  <svg className="h-4 w-4 text-zinc-700" fill="currentColor" viewBox="0 0 16 16">
+                <div className="flex justify-center py-1">
+                  <svg className="h-5 w-5 text-zinc-700" fill="currentColor" viewBox="0 0 16 16">
                     <path d="M8 12l-4-4h8l-4 4z" />
                   </svg>
                 </div>
               )}
-
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 {tier.map((agent) => (
                   <AgentRow
                     key={agent.name}
