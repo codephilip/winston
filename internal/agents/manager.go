@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -28,6 +29,7 @@ type AgentConfig struct {
 	Name         string        `json:"name"`
 	Description  string        `json:"description"`
 	Model        string        `json:"model,omitempty"`
+	MaxTurns     int           `json:"max_turns,omitempty"`
 	Timeout      time.Duration `json:"-"`
 	SystemPrompt string        `json:"-"` // body of the agent .md file
 }
@@ -37,6 +39,7 @@ type agentConfigJSON struct {
 	Name           string `json:"name"`
 	Description    string `json:"description"`
 	Model          string `json:"model,omitempty"`
+	MaxTurns       int    `json:"max_turns,omitempty"`
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
@@ -45,6 +48,7 @@ func (a AgentConfig) MarshalJSON() ([]byte, error) {
 		Name:           a.Name,
 		Description:    a.Description,
 		Model:          a.Model,
+		MaxTurns:       a.MaxTurns,
 		TimeoutSeconds: int(a.Timeout.Seconds()),
 	})
 }
@@ -160,6 +164,11 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 			if err == nil && secs > 0 {
 				cfg.Timeout = time.Duration(secs) * time.Second
 			}
+		case "max_turns":
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err == nil && n > 0 {
+				cfg.MaxTurns = n
+			}
 		}
 	}
 	if cfg.Name == "" {
@@ -170,6 +179,9 @@ func parseAgentFile(path string) (*AgentConfig, error) {
 	}
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 600 * time.Second
+	}
+	if cfg.MaxTurns == 0 {
+		cfg.MaxTurns = 50
 	}
 	cfg.SystemPrompt = strings.TrimSpace(parts[1])
 	return cfg, nil
@@ -350,46 +362,71 @@ func (m *Manager) ContinueThreadStreaming(threadTS, message string, onUpdate Str
 	return result.Result, true, nil
 }
 
-// runClaude executes the claude CLI and returns structured output.
-// If resumeID is non-empty, resumes that session.
-func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, resumeID string) (*claudeResult, error) {
-	// Use model from agent definition, default to sonnet.
+// buildClaudeArgs constructs the common CLI arguments for a claude invocation.
+func buildClaudeArgs(agent *AgentConfig, prompt, resumeID, outputFormat string) ([]string, string) {
 	model := agent.Model
 	if model == "" {
 		model = "sonnet"
 	}
-
-	// Allow inline model override: "opus: do something" or "sonnet: do something"
 	prompt, model = parseModelOverride(prompt, model)
 
 	args := []string{
 		"--print",
-		"--output-format", "json",
+		"--output-format", outputFormat,
 		"--dangerously-skip-permissions",
 		"--model", model,
+		"--max-turns", strconv.Itoa(agent.MaxTurns),
 	}
 
 	if agent.SystemPrompt != "" && resumeID == "" {
 		args = append(args, "--system-prompt", agent.SystemPrompt)
 	}
-
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	}
 
 	args = append(args, prompt)
+	return args, model
+}
 
-	// Apply per-agent timeout.
+// newClaudeCmd creates an exec.Cmd for claude with stdin closed and its own process group,
+// so we can kill the entire tree on timeout.
+func newClaudeCmd(ctx context.Context, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Dir = os.Getenv("HOME")
+	// Own process group so we can kill claude + all children on timeout.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Close stdin so any interactive prompt (AskUserQuestion, etc.) fails
+	// immediately instead of hanging forever.
+	cmd.Stdin = nil
+	return cmd
+}
+
+// killProcessGroup sends SIGKILL to the entire process group.
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	pgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err == nil {
+		syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+}
+
+// runClaude executes the claude CLI and returns structured output.
+// If resumeID is non-empty, resumes that session.
+func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, resumeID string) (*claudeResult, error) {
+	args, _ := buildClaudeArgs(agent, prompt, resumeID, "json")
+
 	ctx, cancel := context.WithTimeout(ctx, agent.Timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	// Run from $HOME so Claude loads ~/.claude agents, skills, and settings.
-	cmd.Dir = os.Getenv("HOME")
+	cmd := newClaudeCmd(ctx, args)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			killProcessGroup(cmd)
 			return nil, fmt.Errorf("agent %s timed out after %s", agent.Name, agent.Timeout)
 		}
 		return nil, fmt.Errorf("agent %s failed: %w\noutput: %s", agent.Name, err, string(output))
@@ -397,7 +434,6 @@ func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, res
 
 	var result claudeResult
 	if err := json.Unmarshal(output, &result); err != nil {
-		// Fallback: return raw output if JSON parsing fails
 		return &claudeResult{Result: string(output)}, nil
 	}
 
@@ -412,39 +448,21 @@ func (m *Manager) runClaude(ctx context.Context, agent *AgentConfig, prompt, res
 // periodically (at most every 2 seconds) with accumulated output.
 // At the end, it parses the final JSON result just like runClaude.
 func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, prompt, resumeID string, onUpdate StreamCallback) (*claudeResult, error) {
-	model := agent.Model
-	if model == "" {
-		model = "sonnet"
+	args, _ := buildClaudeArgs(agent, prompt, resumeID, "stream-json")
+	// Insert --verbose after --print for streaming
+	for i, a := range args {
+		if a == "--print" {
+			args = append(args[:i+1], append([]string{"--verbose"}, args[i+1:]...)...)
+			break
+		}
 	}
 
-	prompt, model = parseModelOverride(prompt, model)
-
-	args := []string{
-		"--print",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--dangerously-skip-permissions",
-		"--model", model,
-	}
-
-	if agent.SystemPrompt != "" && resumeID == "" {
-		args = append(args, "--system-prompt", agent.SystemPrompt)
-	}
-
-	if resumeID != "" {
-		args = append(args, "--resume", resumeID)
-	}
-
-	args = append(args, prompt)
-
-	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Dir = os.Getenv("HOME")
+	cmd := newClaudeCmd(ctx, args)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("agent %s pipe failed: %w", agent.Name, err)
 	}
-	// Capture stderr separately so it doesn't pollute the stream
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 
@@ -544,6 +562,10 @@ func (m *Manager) runClaudeStreaming(ctx context.Context, agent *AgentConfig, pr
 	}
 
 	if err := cmd.Wait(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			killProcessGroup(cmd)
+			return nil, fmt.Errorf("agent %s timed out after %s", agent.Name, agent.Timeout)
+		}
 		return nil, fmt.Errorf("agent %s failed: %w\nstderr: %s", agent.Name, err, stderrBuf.String())
 	}
 
