@@ -101,6 +101,7 @@ func New() http.Handler {
 		r.Use(BasicAuth)
 		r.Get("/health", healthHandler)
 		r.Get("/agents", manager.ListAgents)
+		r.Get("/agents/{agent}", manager.GetAgent)
 		r.Post("/agents/{agent}/run", manager.RunAgent)
 		r.Put("/agents/{agent}/model", handleModelUpdate(manager))
 		r.Get("/agents/{agent}/sessions/{session}", manager.GetSession)

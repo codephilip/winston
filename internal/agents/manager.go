@@ -700,6 +700,30 @@ func (m *Manager) ListAgents(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(list)
 }
 
+func (m *Manager) GetAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agent")
+	m.mu.RLock()
+	agent, ok := m.agents[agentID]
+	m.mu.RUnlock()
+	if !ok {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+	// Return full detail including system prompt
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"name":            agent.Name,
+		"description":     agent.Description,
+		"model":           agent.Model,
+		"max_turns":       agent.MaxTurns,
+		"workspace":       agent.Workspace,
+		"short_name":      agent.ShortName,
+		"tools":           agent.Tools,
+		"timeout_seconds": int(agent.Timeout.Seconds()),
+		"system_prompt":   agent.SystemPrompt,
+	})
+}
+
 func (m *Manager) GetSession(w http.ResponseWriter, r *http.Request) {
 	threadTS := chi.URLParam(r, "session")
 	m.mu.RLock()
