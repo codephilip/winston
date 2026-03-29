@@ -112,18 +112,19 @@ func New() http.Handler {
 		switch r.Host {
 		case "personal.polymr.io":
 			// Static assets don't need auth or rate limiting
-			if strings.HasPrefix(r.URL.Path, "/_next/") || r.URL.Path == "/favicon.ico" {
+			if strings.HasPrefix(r.URL.Path, "/_next/") ||
+				strings.HasPrefix(r.URL.Path, "/__nextjs") ||
+				r.URL.Path == "/favicon.ico" {
 				frontendProxy.ServeHTTP(w, r)
 				return
 			}
-			// Everything else requires rate limiting + auth
-			RateLimitAPI(RateLimitAuth(AuditLog(BasicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasPrefix(r.URL.Path, "/api") {
-					api.ServeHTTP(w, r)
-				} else {
-					frontendProxy.ServeHTTP(w, r)
-				}
-			}))))).ServeHTTP(w, r)
+			// API requests → forward directly to api router (has its own middleware)
+			if strings.HasPrefix(r.URL.Path, "/api") {
+				api.ServeHTTP(w, r)
+				return
+			}
+			// Frontend pages → auth only (separate from API rate limits)
+			AuditLog(BasicAuth(frontendProxy)).ServeHTTP(w, r)
 		default:
 			// personal-api.polymr.io and localhost go to the API router
 			api.ServeHTTP(w, r)
