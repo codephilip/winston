@@ -59,8 +59,10 @@ func (l *ipLimiter) cleanup() {
 	}
 }
 
-// API rate limiter: 30 requests per minute (0.5/s), burst of 5.
-var apiLimiter = newIPLimiter(rate.Limit(30.0/60.0), 5)
+// API rate limiter: 30 requests per minute (0.5/s), burst of 15.
+// Burst must accommodate page loads that fire several fetches at once
+// (e.g. voice flow: transcribe + agent run + synthesize in quick succession).
+var apiLimiter = newIPLimiter(rate.Limit(30.0/60.0), 15)
 
 // Auth brute force limiter: 15 requests per minute (0.25/s), burst of 10.
 // Generous enough for Cloudflare Access callbacks + browser, tight enough to block brute force.
