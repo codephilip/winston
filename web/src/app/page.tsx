@@ -52,31 +52,74 @@ interface AgentInfo {
   model?: string;
 }
 
+interface HealthStatus {
+  status: string;
+  uptime: string;
+  frontend: string;
+  agents: number;
+  active_sessions: number;
+  active_schedules: number;
+}
+
 export default function Home() {
   const [models, setModels] = useState<Record<string, string>>({});
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [serviceUp, setServiceUp] = useState<boolean | null>(null);
 
   useEffect(() => {
-    async function fetchAgents() {
+    async function fetchData() {
       try {
-        const res = await fetch("/api/agents");
-        const agents: AgentInfo[] = await res.json();
-        const map: Record<string, string> = {};
-        for (const a of agents) {
-          if (a.model) map[a.name] = a.model;
+        const [healthRes, agentsRes] = await Promise.all([
+          fetch("/api/health"),
+          fetch("/api/agents"),
+        ]);
+        if (healthRes.ok) {
+          setHealth(await healthRes.json());
+          setServiceUp(true);
+        } else {
+          setServiceUp(false);
         }
-        setModels(map);
+        if (agentsRes.ok) {
+          const agents: AgentInfo[] = await agentsRes.json();
+          const map: Record<string, string> = {};
+          for (const a of agents) {
+            if (a.model) map[a.name] = a.model;
+          }
+          setModels(map);
+        }
       } catch {
-        // router not running
+        setServiceUp(false);
       }
     }
-    fetchAgents();
+    fetchData();
   }, []);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <header className="border-b border-zinc-800 px-6 py-4">
         <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <h1 className="text-2xl font-bold tracking-tight">Winston</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-2xl font-bold tracking-tight">Winston</h1>
+            {serviceUp !== null && (
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${serviceUp ? "bg-green-500" : "bg-red-500"}`}
+                />
+                {health && (
+                  <span className="text-xs text-zinc-500">
+                    {health.agents} agents &middot; {health.uptime} uptime
+                    {health.active_sessions > 0 &&
+                      ` · ${health.active_sessions} sessions`}
+                    {health.active_schedules > 0 &&
+                      ` · ${health.active_schedules} schedules`}
+                  </span>
+                )}
+                {serviceUp === false && (
+                  <span className="text-xs text-red-400">Service unreachable</span>
+                )}
+              </div>
+            )}
+          </div>
           <nav className="flex gap-4">
             <Link
               href="/voice"

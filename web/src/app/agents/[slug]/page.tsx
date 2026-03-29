@@ -1,17 +1,36 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
 interface Message {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
 }
 
+interface HealthStatus {
+  status: string;
+  uptime: string;
+  frontend: string;
+  agents: number;
+  active_sessions: number;
+  active_schedules: number;
+}
+
 const MODELS = ["haiku", "sonnet", "opus"] as const;
 type Model = (typeof MODELS)[number];
+
+function StatusDot({ status }: { status: "ok" | "loading" | "down" }) {
+  const color =
+    status === "ok"
+      ? "bg-green-500"
+      : status === "loading"
+        ? "bg-yellow-500 animate-pulse"
+        : "bg-red-500";
+  return <span className={`inline-block h-2 w-2 rounded-full ${color}`} />;
+}
 
 export default function AgentChat() {
   const { slug } = useParams<{ slug: string }>();
@@ -20,13 +39,33 @@ export default function AgentChat() {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState<Model | null>(null);
   const [modelLoading, setModelLoading] = useState(false);
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<"ok" | "loading" | "down">("loading");
   const messagesEnd = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const fetchHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        const data: HealthStatus = await res.json();
+        setHealth(data);
+        setServiceStatus("ok");
+        return true;
+      }
+    } catch {
+      // unreachable
+    }
+    setServiceStatus("down");
+    return false;
+  }, []);
+
+  // Fetch health + agent model on mount
   useEffect(() => {
+    fetchHealth();
     async function fetchModel() {
       try {
         const res = await fetch("/api/agents");
@@ -38,7 +77,30 @@ export default function AgentChat() {
       }
     }
     fetchModel();
-  }, [slug]);
+  }, [slug, fetchHealth]);
+
+  function addSystemMessage(content: string) {
+    setMessages((prev) => [
+      ...prev,
+      { role: "system", content, timestamp: new Date() },
+    ]);
+  }
+
+  async function waitForRestart() {
+    setServiceStatus("loading");
+    // Wait for the old process to shut down
+    await new Promise((r) => setTimeout(r, 3000));
+
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const up = await fetchHealth();
+      if (up) {
+        addSystemMessage("Services restarted successfully.");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    addSystemMessage("Restart is taking longer than expected. Check server logs.");
+  }
 
   async function changeModel(newModel: Model) {
     if (newModel === model || modelLoading) return;
@@ -53,14 +115,10 @@ export default function AgentChat() {
         const data = await res.json();
         setModel(data.new_model);
         if (data.restart) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "assistant",
-              content: `Model changed to ${data.new_model}. Services are restarting — this may take a moment.`,
-              timestamp: new Date(),
-            },
-          ]);
+          addSystemMessage(
+            `Model changed to ${data.new_model}. Services are restarting…`
+          );
+          waitForRestart();
         }
       }
     } catch {
@@ -121,6 +179,14 @@ export default function AgentChat() {
               &larr;
             </Link>
             <h1 className="text-xl font-bold capitalize">/{slug}</h1>
+            <div className="flex items-center gap-2">
+              <StatusDot status={serviceStatus} />
+              {health && (
+                <span className="text-xs text-zinc-500">
+                  {health.uptime} uptime
+                </span>
+              )}
+            </div>
           </div>
           {model && (
             <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
@@ -153,19 +219,31 @@ export default function AgentChat() {
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+              className={`flex ${
+                msg.role === "user"
+                  ? "justify-end"
+                  : msg.role === "system"
+                    ? "justify-center"
+                    : "justify-start"
+              }`}
             >
-              <div
-                className={`max-w-[80%] rounded-xl px-4 py-3 ${
-                  msg.role === "user"
-                    ? "bg-blue-600 text-white"
-                    : "bg-zinc-800 text-zinc-100"
-                }`}
-              >
-                <pre className="whitespace-pre-wrap font-sans text-sm">
+              {msg.role === "system" ? (
+                <div className="rounded-lg bg-zinc-900 px-4 py-2 text-xs text-zinc-400">
                   {msg.content}
-                </pre>
-              </div>
+                </div>
+              ) : (
+                <div
+                  className={`max-w-[80%] rounded-xl px-4 py-3 ${
+                    msg.role === "user"
+                      ? "bg-blue-600 text-white"
+                      : "bg-zinc-800 text-zinc-100"
+                  }`}
+                >
+                  <pre className="whitespace-pre-wrap font-sans text-sm">
+                    {msg.content}
+                  </pre>
+                </div>
+              )}
             </div>
           ))}
           {loading && (
