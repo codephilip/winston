@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,8 +48,18 @@ func post(text string) {
 	}
 }
 
+// restartReasonFile is a breadcrumb left by ModelChange so Startup can report why it restarted.
+var restartReasonFile = filepath.Join(os.TempDir(), "winston-restart-reason")
+
 // Startup sends a notification that the router has started.
+// If a restart reason breadcrumb exists, it includes the reason and cleans up.
 func Startup() {
+	if data, err := os.ReadFile(restartReasonFile); err == nil {
+		os.Remove(restartReasonFile)
+		reason := strings.TrimSpace(string(data))
+		post(fmt.Sprintf(":white_check_mark: Router restarted on `%s` — %s", hostname, reason))
+		return
+	}
 	post(fmt.Sprintf(":white_check_mark: Router started on `%s`", hostname))
 }
 
@@ -95,9 +107,13 @@ func FrontendRecovered() {
 }
 
 // ModelChange sends a notification that an agent's model was changed and services are restarting.
+// Writes a breadcrumb so the next Startup() call can confirm the restart completed.
 func ModelChange(agent, oldModel, newModel string) {
-	post(fmt.Sprintf(":arrows_counterclockwise: Agent `%s` model changed: *%s* → *%s* on `%s` — restarting services",
-		agent, oldModel, newModel, hostname))
+	reason := fmt.Sprintf("agent `%s` model changed: *%s* → *%s*", agent, oldModel, newModel)
+	// Write breadcrumb for post-restart notification
+	_ = os.WriteFile(restartReasonFile, []byte(reason), 0644)
+
+	post(fmt.Sprintf(":arrows_counterclockwise: %s on `%s` — restarting services", reason, hostname))
 }
 
 // WrapFrontendProxy wraps an httputil.ReverseProxy to detect frontend failures

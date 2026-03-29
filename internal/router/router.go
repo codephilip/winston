@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -254,6 +255,8 @@ func (rb *responseBuffer) WriteHeader(code int)       { rb.code = code }
 func (rb *responseBuffer) Write(b []byte) (int, error) { rb.body = append(rb.body, b...); return len(b), nil }
 
 // restartServices rebuilds and restarts the Go router and Next.js frontend via launchctl.
+// The script is detached into its own process group so it survives this process being killed
+// (restart.sh does launchctl bootout on this very service).
 func restartServices() {
 	projectDir := filepath.Dir(filepath.Dir(os.Args[0])) // bin/polymr → project root
 	// Fall back to well-known project path if binary isn't in bin/
@@ -265,14 +268,27 @@ func restartServices() {
 	script := filepath.Join(projectDir, "scripts", "restart.sh")
 	log.Printf("[router] triggering service restart via %s", script)
 
-	cmd := exec.Command("bash", script)
+	// Run detached: own process group + nohup so it survives parent death
+	cmd := exec.Command("nohup", "bash", script)
 	cmd.Dir = projectDir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("[router] restart failed: %v\n%s", err, string(output))
-	} else {
-		log.Printf("[router] restart completed")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Send output to log file instead of pipes (which break when parent dies)
+	logFile, err := os.OpenFile(
+		filepath.Join(os.Getenv("HOME"), "Library", "Logs", "winston-restart.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644,
+	)
+	if err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+		defer logFile.Close()
 	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("[router] restart failed to start: %v", err)
+		return
+	}
+	log.Printf("[router] restart script launched (pid %d), this process will be replaced", cmd.Process.Pid)
+	// Do NOT wait — the script will kill us via launchctl bootout
 }
 
 func handleKaliStatus(w http.ResponseWriter, r *http.Request) {
