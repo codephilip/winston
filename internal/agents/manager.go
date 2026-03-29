@@ -724,6 +724,63 @@ func (m *Manager) GetAgent(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (m *Manager) UpdateAgentPrompt(w http.ResponseWriter, r *http.Request) {
+	agentID := chi.URLParam(r, "agent")
+
+	var req struct {
+		SystemPrompt string `json:"system_prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	m.mu.Lock()
+	agent, ok := m.agents[agentID]
+	if !ok {
+		m.mu.Unlock()
+		http.Error(w, `{"error":"agent not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Rebuild the .md file: preserve frontmatter, replace body
+	path := filepath.Join(os.Getenv("HOME"), ".claude", "agents", agentID+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		m.mu.Unlock()
+		http.Error(w, fmt.Sprintf(`{"error":"read failed: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	content := string(data)
+	parts := strings.SplitN(content[3:], "---", 2)
+	if len(parts) < 2 {
+		m.mu.Unlock()
+		http.Error(w, `{"error":"malformed agent file"}`, http.StatusInternalServerError)
+		return
+	}
+
+	newContent := "---" + parts[0] + "---\n\n" + strings.TrimSpace(req.SystemPrompt) + "\n"
+	if err := os.WriteFile(path, []byte(newContent), 0644); err != nil {
+		m.mu.Unlock()
+		http.Error(w, fmt.Sprintf(`{"error":"write failed: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	agent.SystemPrompt = strings.TrimSpace(req.SystemPrompt)
+	agent.Tools = detectTools(agent.SystemPrompt)
+	m.mu.Unlock()
+
+	log.Printf("[agents] updated system prompt for %s", agentID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"agent":   agentID,
+		"saved":   true,
+		"restart": true,
+	})
+}
+
 func (m *Manager) GetSession(w http.ResponseWriter, r *http.Request) {
 	threadTS := chi.URLParam(r, "session")
 	m.mu.RLock()

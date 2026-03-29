@@ -104,6 +104,7 @@ func New() http.Handler {
 		r.Get("/agents/{agent}", manager.GetAgent)
 		r.Post("/agents/{agent}/run", manager.RunAgent)
 		r.Put("/agents/{agent}/model", handleModelUpdate(manager))
+		r.Put("/agents/{agent}/prompt", handlePromptUpdate(manager))
 		r.Get("/agents/{agent}/sessions/{session}", manager.GetSession)
 		r.Post("/agents/{agent}/sessions/{session}/message", manager.SendMessage)
 		r.Get("/schedules", manager.ListSchedules)
@@ -240,6 +241,32 @@ func handleModelUpdate(manager *agents.Manager) http.HandlerFunc {
 			notify.ModelChange(result.Agent, result.OldModel, result.NewModel)
 
 			// Restart services asynchronously so the response is sent first
+			go func() {
+				time.Sleep(1 * time.Second)
+				restartServices()
+			}()
+		}
+	}
+}
+
+// handlePromptUpdate wraps the prompt update endpoint with Slack notification and restart.
+func handlePromptUpdate(manager *agents.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		agentID := chi.URLParam(r, "agent")
+		rec := &responseBuffer{header: http.Header{}, code: http.StatusOK}
+		manager.UpdateAgentPrompt(rec, r)
+
+		for k, v := range rec.header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(rec.code)
+		w.Write(rec.body)
+
+		var result struct {
+			Restart bool `json:"restart"`
+		}
+		if json.Unmarshal(rec.body, &result) == nil && result.Restart {
+			notify.PromptChange(agentID)
 			go func() {
 				time.Sleep(1 * time.Second)
 				restartServices()

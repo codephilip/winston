@@ -116,6 +116,13 @@ func ModelChange(agent, oldModel, newModel string) {
 	post(fmt.Sprintf(":arrows_counterclockwise: %s on `%s` — restarting services", reason, hostname))
 }
 
+// PromptChange sends a notification that an agent's system prompt was edited.
+func PromptChange(agent string) {
+	reason := fmt.Sprintf("agent `%s` system prompt updated", agent)
+	_ = os.WriteFile(restartReasonFile, []byte(reason), 0644)
+	post(fmt.Sprintf(":pencil2: %s on `%s` — restarting services", reason, hostname))
+}
+
 // WrapFrontendProxy wraps an httputil.ReverseProxy to detect frontend failures
 // and send debounced Slack notifications.
 func WrapFrontendProxy(proxy http.Handler) http.Handler {
