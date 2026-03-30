@@ -125,6 +125,7 @@ type Manager struct {
 	SlackPost        SlackPoster
 	SlackPostTS      SlackThreadStarter
 	SlackThreadReply SlackThreadReplier
+	SlackOwnerID     string // Slack user ID to tag on scheduled results
 }
 
 func NewManager() *Manager {
@@ -912,9 +913,10 @@ func (m *Manager) addScheduleEntry(sched *Schedule) error {
 				result = fmt.Sprintf(":x: *%s failed:*\n```%v```", agentID, runErr)
 			}
 
-			msg := result
+			// Tag the user so they get a Slack notification for scheduled results.
+			msg := fmt.Sprintf("<@%s>\n%s", m.SlackOwnerID, result)
 			if len(msg) > 3000 {
-				msg = msg[:2950] + "\n\n_...truncated_"
+				msg = msg[:2950] + "\n\n_...response truncated_"
 			}
 			if err := m.SlackThreadReply(channelID, threadTS, msg); err != nil {
 				log.Printf("[scheduler] %s failed to post result: %v", schedID, err)

@@ -46,6 +46,7 @@ func New() http.Handler {
 	manager.SlackPost = slack.PostMessage
 	manager.SlackPostTS = slack.PostMessageTS
 	manager.SlackThreadReply = slack.PostThreadReply
+	manager.SlackOwnerID = os.Getenv("SLACK_OWNER_ID")
 	voiceClient := voice.NewClient()
 
 	// API router (personal-api.polymr.io)
