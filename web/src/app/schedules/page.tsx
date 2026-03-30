@@ -324,16 +324,20 @@ function WorkspaceFilter({
 
   if (workspaces.length === 0) return null;
 
+  const label = active === null ? "All" : active === "personal" ? "Personal" : active;
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-xs font-medium capitalize transition-colors hover:border-zinc-700"
+        className="flex h-9 items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-[13px] font-medium capitalize text-zinc-300 transition-all hover:border-white/[0.1] hover:bg-white/[0.05]"
       >
-        <span className="h-2 w-2 rounded-full bg-gradient-to-br from-blue-400 to-violet-500" />
-        {active === null ? "All agents" : active}
+        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 text-[9px] font-bold text-white">
+          {label[0].toUpperCase()}
+        </span>
+        {label}
         <svg
-          className={`h-3 w-3 text-zinc-500 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`ml-0.5 h-3.5 w-3.5 text-zinc-500 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -343,38 +347,38 @@ function WorkspaceFilter({
         </svg>
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl shadow-black/50">
-          <div className="p-1">
+        <div className="absolute left-0 top-full z-50 mt-2 min-w-[200px] overflow-hidden rounded-xl border border-white/[0.06] bg-[var(--surface-2)] shadow-2xl shadow-black/60">
+          <div className="p-1.5">
+            <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+              Filter
+            </p>
             <button
-              onClick={() => {
-                onChange(null);
-                setOpen(false);
-              }}
-              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-800 ${active === null ? "bg-zinc-800 text-white" : "text-zinc-400"}`}
+              onClick={() => { onChange(null); setOpen(false); }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all ${active === null ? "bg-white/[0.06] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
             >
-              All agents
+              <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-zinc-500 to-zinc-600 text-[9px] font-bold text-white">A</span>
+              All
+              {active === null && <svg className="ml-auto h-3.5 w-3.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
             </button>
             <button
-              onClick={() => {
-                onChange("personal");
-                setOpen(false);
-              }}
-              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-800 ${active === "personal" ? "bg-zinc-800 text-white" : "text-zinc-400"}`}
+              onClick={() => { onChange("personal"); setOpen(false); }}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all ${active === "personal" ? "bg-white/[0.06] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
             >
-              <span className="h-2 w-2 rounded-full bg-amber-500" />
+              <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-amber-500 to-orange-600 text-[9px] font-bold text-white">P</span>
               Personal
+              {active === "personal" && <svg className="ml-auto h-3.5 w-3.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
             </button>
             {workspaces.map((ws) => (
               <button
                 key={ws}
-                onClick={() => {
-                  onChange(ws);
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm capitalize transition-colors hover:bg-zinc-800 ${active === ws ? "bg-zinc-800 text-white" : "text-zinc-400"}`}
+                onClick={() => { onChange(ws); setOpen(false); }}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-[13px] font-medium capitalize transition-all ${active === ws ? "bg-white/[0.06] text-white" : "text-zinc-400 hover:bg-white/[0.04]"}`}
               >
-                <span className="h-2 w-2 rounded-full bg-violet-500" />
+                <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gradient-to-br from-violet-500 to-purple-600 text-[9px] font-bold text-white">
+                  {ws[0].toUpperCase()}
+                </span>
                 {ws}
+                {active === ws && <svg className="ml-auto h-3.5 w-3.5 text-indigo-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>}
               </button>
             ))}
           </div>
@@ -393,15 +397,15 @@ function ViewSwitcher({ view, onChange }: { view: ViewMode; onChange: (v: ViewMo
     { label: "Week", value: "week" },
   ];
   return (
-    <div className="flex overflow-hidden rounded-full border border-zinc-700 bg-zinc-900 p-0.5">
+    <div className="flex h-9 overflow-hidden rounded-lg border border-white/[0.06] bg-white/[0.03]">
       {views.map((v) => (
         <button
           key={v.value}
           onClick={() => onChange(v.value)}
-          className={`rounded-full px-4 py-1.5 text-xs font-medium transition-all ${
+          className={`px-3 text-[13px] font-medium transition-all ${
             view === v.value
-              ? "bg-blue-600 text-white shadow-sm"
-              : "text-zinc-400 hover:text-zinc-200"
+              ? "bg-white/[0.08] text-white"
+              : "text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
           }`}
         >
           {v.label}
@@ -1172,7 +1176,7 @@ export default function Schedules() {
               onClick={syncToGoogleCalendar}
               disabled={syncing}
               title="Sync to Google Calendar"
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-zinc-400 transition-colors hover:border-zinc-600 hover:bg-[var(--surface-3)] hover:text-white disabled:opacity-50"
+              className="flex h-9 items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 text-[13px] font-medium text-zinc-400 transition-all hover:border-white/[0.1] hover:bg-white/[0.05] hover:text-white disabled:opacity-50"
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
@@ -1181,7 +1185,7 @@ export default function Schedules() {
             </button>
             <button
               onClick={() => setShowForm(!showForm)}
-              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-sm font-medium shadow-lg shadow-indigo-600/10 transition-all hover:shadow-indigo-600/20"
+              className="flex h-9 items-center gap-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 text-[13px] font-medium shadow-lg shadow-indigo-600/10 transition-all hover:shadow-indigo-600/20"
             >
               <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
