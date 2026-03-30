@@ -95,6 +95,19 @@ type Schedule struct {
 // SlackPoster is a function that posts a message to a Slack channel.
 type SlackPoster func(channel, text string) error
 
+// schedulePersisted is the on-disk representation of a schedule (no cron EntryID).
+type schedulePersisted struct {
+	ID       string `json:"id"`
+	AgentID  string `json:"agent_id"`
+	Cron     string `json:"cron"`
+	Prompt   string `json:"prompt"`
+	SlackCh  string `json:"slack_channel,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+	Status   string `json:"status"`
+}
+
+var scheduleFile = filepath.Join(os.Getenv("HOME"), ".config", "winston", "schedules.json")
+
 // Manager handles agent lifecycle and routing.
 type Manager struct {
 	mu          sync.RWMutex
@@ -138,6 +151,9 @@ func NewManager() *Manager {
 	}
 
 	log.Printf("[agents] %d agent(s) ready", len(m.agents))
+
+	m.loadSchedules()
+
 	return m
 }
 
@@ -831,6 +847,111 @@ func (m *Manager) SendMessage(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"response": result})
 }
 
+// saveSchedules writes all current schedules to disk (called under m.mu).
+func (m *Manager) saveSchedules() {
+	list := make([]schedulePersisted, 0, len(m.schedules))
+	for _, s := range m.schedules {
+		list = append(list, schedulePersisted{
+			ID:       s.ID,
+			AgentID:  s.AgentID,
+			Cron:     s.Cron,
+			Prompt:   s.Prompt,
+			SlackCh:  s.SlackCh,
+			Timezone: s.Timezone,
+			Status:   s.Status,
+		})
+	}
+	if err := os.MkdirAll(filepath.Dir(scheduleFile), 0755); err != nil {
+		log.Printf("[scheduler] could not create config dir: %v", err)
+		return
+	}
+	data, _ := json.MarshalIndent(list, "", "  ")
+	if err := os.WriteFile(scheduleFile, data, 0644); err != nil {
+		log.Printf("[scheduler] failed to save schedules: %v", err)
+	}
+}
+
+// addScheduleEntry registers a schedule with the cron daemon and stores it.
+// Must be called with m.mu held (write lock).
+func (m *Manager) addScheduleEntry(sched *Schedule) error {
+	cronExpr := sched.Cron
+	if sched.Timezone != "" {
+		cronExpr = fmt.Sprintf("CRON_TZ=%s %s", sched.Timezone, sched.Cron)
+	}
+
+	agentID := sched.AgentID
+	prompt := sched.Prompt
+	slackCh := sched.SlackCh
+	schedID := sched.ID
+
+	entryID, err := m.cron.AddFunc(cronExpr, func() {
+		log.Printf("[scheduler] Running %s: agent=%s prompt=%q", schedID, agentID, prompt)
+		result, err := m.SpawnAgent(agentID, prompt)
+		if err != nil {
+			log.Printf("[scheduler] %s failed: %v", schedID, err)
+			result = fmt.Sprintf("Scheduled agent error: %v", err)
+		}
+		if slackCh != "" && m.SlackPost != nil {
+			msg := fmt.Sprintf("*[Scheduled] /%s*\n%s", agentID, result)
+			if len(msg) > 3000 {
+				msg = msg[:2950] + "\n\n_...truncated_"
+			}
+			if err := m.SlackPost(slackCh, msg); err != nil {
+				log.Printf("[scheduler] Failed to post to Slack %s: %v", slackCh, err)
+			}
+		}
+	})
+	if err != nil {
+		return err
+	}
+	sched.EntryID = entryID
+	m.schedules[sched.ID] = sched
+	return nil
+}
+
+// loadSchedules reads persisted schedules from disk and re-registers them with the cron daemon.
+func (m *Manager) loadSchedules() {
+	data, err := os.ReadFile(scheduleFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[scheduler] could not read %s: %v", scheduleFile, err)
+		}
+		return
+	}
+
+	var list []schedulePersisted
+	if err := json.Unmarshal(data, &list); err != nil {
+		log.Printf("[scheduler] failed to parse schedules file: %v", err)
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, p := range list {
+		sched := &Schedule{
+			ID:       p.ID,
+			AgentID:  p.AgentID,
+			Cron:     p.Cron,
+			Prompt:   p.Prompt,
+			SlackCh:  p.SlackCh,
+			Timezone: p.Timezone,
+			Status:   p.Status,
+		}
+		// Track highest ID number for new schedule naming
+		var n int
+		if cnt, _ := fmt.Sscanf(p.ID, "sched_%d", &n); cnt == 1 && n > m.schedCount {
+			m.schedCount = n
+		}
+		if err := m.addScheduleEntry(sched); err != nil {
+			log.Printf("[scheduler] could not restore %s: %v", p.ID, err)
+			continue
+		}
+		log.Printf("[scheduler] restored %s: cron=%s agent=%s", sched.ID, sched.Cron, sched.AgentID)
+	}
+	log.Printf("[scheduler] %d schedule(s) restored", len(list))
+}
+
 func (m *Manager) ListSchedules(w http.ResponseWriter, r *http.Request) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -859,45 +980,13 @@ func (m *Manager) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	sched.ID = fmt.Sprintf("sched_%d", m.schedCount)
 	sched.Status = "active"
 
-	// Register with the cron scheduler
-	agentID := sched.AgentID
-	prompt := sched.Prompt
-	slackCh := sched.SlackCh
-	schedID := sched.ID
-
-	// Use timezone-aware cron expression if timezone is set
-	cronExpr := sched.Cron
-	if sched.Timezone != "" {
-		cronExpr = fmt.Sprintf("CRON_TZ=%s %s", sched.Timezone, sched.Cron)
-	}
-
-	entryID, err := m.cron.AddFunc(cronExpr, func() {
-		log.Printf("[scheduler] Running %s: agent=%s prompt=%q", schedID, agentID, prompt)
-		result, err := m.SpawnAgent(agentID, prompt)
-		if err != nil {
-			log.Printf("[scheduler] %s failed: %v", schedID, err)
-			result = fmt.Sprintf("Scheduled agent error: %v", err)
-		}
-
-		// Post to Slack if channel is configured
-		if slackCh != "" && m.SlackPost != nil {
-			msg := fmt.Sprintf("*[Scheduled] /%s*\n%s", agentID, result)
-			if len(msg) > 3000 {
-				msg = msg[:2950] + "\n\n_...truncated_"
-			}
-			if err := m.SlackPost(slackCh, msg); err != nil {
-				log.Printf("[scheduler] Failed to post to Slack %s: %v", slackCh, err)
-			}
-		}
-	})
-	if err != nil {
+	if err := m.addScheduleEntry(&sched); err != nil {
 		m.mu.Unlock()
 		http.Error(w, fmt.Sprintf("invalid cron expression: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	sched.EntryID = entryID
-	m.schedules[sched.ID] = &sched
+	m.saveSchedules()
 	m.mu.Unlock()
 
 	log.Printf("[scheduler] Created schedule %s: cron=%s agent=%s", sched.ID, sched.Cron, sched.AgentID)
@@ -1073,14 +1162,16 @@ func (m *Manager) UpdateAgentModel(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) DeleteSchedule(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	sched, ok := m.schedules[id]
 	if !ok {
+		m.mu.Unlock()
 		http.Error(w, "schedule not found", http.StatusNotFound)
 		return
 	}
 	m.cron.Remove(sched.EntryID)
 	delete(m.schedules, id)
+	m.saveSchedules()
+	m.mu.Unlock()
 	log.Printf("[scheduler] Deleted schedule %s", id)
 	w.WriteHeader(http.StatusNoContent)
 }
