@@ -95,6 +95,12 @@ type Schedule struct {
 // SlackPoster is a function that posts a message to a Slack channel.
 type SlackPoster func(channel, text string) error
 
+// SlackPosterTS posts a message and returns the channel ID and message timestamp for threading.
+type SlackPosterTS func(channel, text string) (channelID, ts string, err error)
+
+// SlackUpdater updates an existing Slack message in place.
+type SlackUpdater func(channel, ts, text string)
+
 // schedulePersisted is the on-disk representation of a schedule (no cron EntryID).
 type schedulePersisted struct {
 	ID       string `json:"id"`
@@ -107,6 +113,7 @@ type schedulePersisted struct {
 }
 
 var scheduleFile = filepath.Join(os.Getenv("HOME"), ".config", "winston", "schedules.json")
+var sessionFile = filepath.Join(os.Getenv("HOME"), ".config", "winston", "sessions.json")
 
 // SlackThreadStarter posts a message and returns (channelID, messageTS, error).
 type SlackThreadStarter func(channel, text string) (channelID, ts string, err error)
@@ -162,6 +169,7 @@ func NewManager() *Manager {
 	log.Printf("[agents] %d agent(s) ready", len(m.agents))
 
 	m.loadSchedules()
+	m.loadSessions()
 
 	return m
 }
@@ -348,6 +356,7 @@ func (m *Manager) SpawnAgentInThread(agentName, prompt, channel, threadTS string
 		SlackChannel:    channel,
 		LastUsed:        time.Now(),
 	}
+	m.saveSessions()
 	m.mu.Unlock()
 
 	return result.Result, nil
@@ -387,6 +396,7 @@ func (m *Manager) SpawnAgentInThreadStreaming(agentName, prompt, channel, thread
 	m.mu.Lock()
 	m.sessions[threadTS].ClaudeSessionID = result.SessionID
 	m.sessions[threadTS].LastUsed = time.Now()
+	m.saveSessions()
 	m.mu.Unlock()
 
 	return result.Result, nil
@@ -419,6 +429,7 @@ func (m *Manager) ContinueThread(threadTS, message string) (string, bool, error)
 	m.mu.Lock()
 	session.ClaudeSessionID = result.SessionID
 	session.LastUsed = time.Now()
+	m.saveSessions()
 	m.mu.Unlock()
 
 	return result.Result, true, nil
@@ -450,6 +461,7 @@ func (m *Manager) ContinueThreadStreaming(threadTS, message string, onUpdate Str
 	m.mu.Lock()
 	session.ClaudeSessionID = result.SessionID
 	session.LastUsed = time.Now()
+	m.saveSessions()
 	m.mu.Unlock()
 
 	return result.Result, true, nil
@@ -471,11 +483,16 @@ func buildClaudeArgs(agent *AgentConfig, prompt, resumeID, outputFormat string) 
 		"--max-turns", strconv.Itoa(agent.MaxTurns),
 	}
 
-	if agent.SystemPrompt != "" && resumeID == "" {
-		args = append(args, "--system-prompt", agent.SystemPrompt)
-	}
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
+	} else {
+		// Use --agent to load the .md file directly (avoids huge --system-prompt CLI args)
+		agentFile := filepath.Join(os.Getenv("HOME"), ".claude", "agents", agent.Name+".md")
+		if _, err := os.Stat(agentFile); err == nil {
+			args = append(args, "--agent", agent.Name)
+		} else if agent.SystemPrompt != "" {
+			args = append(args, "--system-prompt", agent.SystemPrompt)
+		}
 	}
 
 	args = append(args, prompt)
@@ -489,8 +506,6 @@ func newClaudeCmd(ctx context.Context, args []string) *exec.Cmd {
 	cmd.Dir = os.Getenv("HOME")
 	// Own process group so we can kill claude + all children on timeout.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Close stdin so any interactive prompt (AskUserQuestion, etc.) fails
-	// immediately instead of hanging forever.
 	cmd.Stdin = nil
 	return cmd
 }
@@ -982,6 +997,51 @@ func (m *Manager) loadSchedules() {
 	log.Printf("[scheduler] %d schedule(s) restored", len(list))
 }
 
+// saveSessions writes active sessions to disk so they survive restarts.
+// Called under m.mu (write lock) after session creation or update.
+func (m *Manager) saveSessions() {
+	list := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.ClaudeSessionID != "" {
+			list = append(list, s)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(sessionFile), 0755); err != nil {
+		log.Printf("[sessions] could not create config dir: %v", err)
+		return
+	}
+	data, _ := json.MarshalIndent(list, "", "  ")
+	if err := os.WriteFile(sessionFile, data, 0644); err != nil {
+		log.Printf("[sessions] failed to save sessions: %v", err)
+	}
+}
+
+// loadSessions restores sessions from disk so thread replies work across restarts.
+func (m *Manager) loadSessions() {
+	data, err := os.ReadFile(sessionFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[sessions] could not read %s: %v", sessionFile, err)
+		}
+		return
+	}
+	var list []*Session
+	if err := json.Unmarshal(data, &list); err != nil {
+		log.Printf("[sessions] failed to parse sessions file: %v", err)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range list {
+		// Only restore sessions from the last 24 hours
+		if time.Since(s.LastUsed) < 24*time.Hour {
+			m.sessions[s.SlackThreadTS] = s
+			log.Printf("[sessions] restored session thread=%s agent=%s", s.SlackThreadTS, s.AgentID)
+		}
+	}
+	log.Printf("[sessions] %d session(s) restored", len(m.sessions))
+}
+
 func (m *Manager) ListSchedules(w http.ResponseWriter, r *http.Request) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -999,9 +1059,13 @@ func (m *Manager) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the cron expression
+	// Validate required fields
 	if sched.Cron == "" {
 		http.Error(w, "cron expression is required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(sched.Prompt) == "" {
+		http.Error(w, "prompt is required — the agent needs instructions for what to do on each run", http.StatusBadRequest)
 		return
 	}
 
@@ -1187,6 +1251,76 @@ func (m *Manager) UpdateAgentModel(w http.ResponseWriter, r *http.Request) {
 		"changed":   changed,
 		"restart":   changed,
 	})
+}
+
+func (m *Manager) UpdateSchedule(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	var update struct {
+		Cron     *string `json:"cron"`
+		Prompt   *string `json:"prompt"`
+		SlackCh  *string `json:"slack_channel"`
+		Timezone *string `json:"timezone"`
+		AgentID  *string `json:"agent_id"`
+		Status   *string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	m.mu.Lock()
+	old, ok := m.schedules[id]
+	if !ok {
+		m.mu.Unlock()
+		http.Error(w, "schedule not found", http.StatusNotFound)
+		return
+	}
+
+	// Build updated schedule, keeping existing values for unset fields
+	sched := &Schedule{
+		ID:       id,
+		AgentID:  old.AgentID,
+		Cron:     old.Cron,
+		Prompt:   old.Prompt,
+		SlackCh:  old.SlackCh,
+		Timezone: old.Timezone,
+		Status:   old.Status,
+	}
+	if update.AgentID != nil {
+		sched.AgentID = *update.AgentID
+	}
+	if update.Cron != nil {
+		sched.Cron = *update.Cron
+	}
+	if update.Prompt != nil {
+		sched.Prompt = *update.Prompt
+	}
+	if update.SlackCh != nil {
+		sched.SlackCh = *update.SlackCh
+	}
+	if update.Timezone != nil {
+		sched.Timezone = *update.Timezone
+	}
+	if update.Status != nil {
+		sched.Status = *update.Status
+	}
+
+	// Remove old cron entry and re-register with updated settings
+	m.cron.Remove(old.EntryID)
+	delete(m.schedules, id)
+
+	if err := m.addScheduleEntry(sched); err != nil {
+		m.mu.Unlock()
+		http.Error(w, fmt.Sprintf("invalid cron expression: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	m.saveSchedules()
+	m.mu.Unlock()
+
+	log.Printf("[scheduler] Updated schedule %s: cron=%s agent=%s", id, sched.Cron, sched.AgentID)
+	json.NewEncoder(w).Encode(sched)
 }
 
 func (m *Manager) DeleteSchedule(w http.ResponseWriter, r *http.Request) {

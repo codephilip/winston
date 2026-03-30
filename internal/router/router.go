@@ -112,6 +112,7 @@ func New() http.Handler {
 		r.Post("/agents/{agent}/sessions/{session}/message", manager.SendMessage)
 		r.Get("/schedules", manager.ListSchedules)
 		r.Post("/schedules", manager.CreateSchedule)
+		r.Put("/schedules/{id}", manager.UpdateSchedule)
 		r.Delete("/schedules/{id}", manager.DeleteSchedule)
 		r.Post("/voice/transcribe", handleVoiceTranscribe(voiceClient))
 		r.Post("/voice/synthesize", handleVoiceSynthesize(voiceClient))
