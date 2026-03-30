@@ -82,13 +82,14 @@ type claudeResult struct {
 
 // Schedule represents a scheduled agent run.
 type Schedule struct {
-	ID      string       `json:"id"`
-	AgentID string       `json:"agent_id"`
-	Cron    string       `json:"cron"`
-	Prompt  string       `json:"prompt"`
-	SlackCh string       `json:"slack_channel,omitempty"`
-	Status  string       `json:"status"`
-	EntryID cron.EntryID `json:"-"` // cron scheduler entry
+	ID       string       `json:"id"`
+	AgentID  string       `json:"agent_id"`
+	Cron     string       `json:"cron"`
+	Prompt   string       `json:"prompt"`
+	SlackCh  string       `json:"slack_channel,omitempty"`
+	Timezone string       `json:"timezone,omitempty"`
+	Status   string       `json:"status"`
+	EntryID  cron.EntryID `json:"-"` // cron scheduler entry
 }
 
 // SlackPoster is a function that posts a message to a Slack channel.
@@ -864,7 +865,13 @@ func (m *Manager) CreateSchedule(w http.ResponseWriter, r *http.Request) {
 	slackCh := sched.SlackCh
 	schedID := sched.ID
 
-	entryID, err := m.cron.AddFunc(sched.Cron, func() {
+	// Use timezone-aware cron expression if timezone is set
+	cronExpr := sched.Cron
+	if sched.Timezone != "" {
+		cronExpr = fmt.Sprintf("CRON_TZ=%s %s", sched.Timezone, sched.Cron)
+	}
+
+	entryID, err := m.cron.AddFunc(cronExpr, func() {
 		log.Printf("[scheduler] Running %s: agent=%s prompt=%q", schedID, agentID, prompt)
 		result, err := m.SpawnAgent(agentID, prompt)
 		if err != nil {
