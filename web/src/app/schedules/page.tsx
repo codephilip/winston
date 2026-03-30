@@ -491,7 +491,7 @@ function ScheduleEditor({
   const agent = agents.find((a) => a.name === schedule.agent_id);
 
   return (
-    <div className="rounded-xl border border-blue-500/30 bg-zinc-900 p-5">
+    <div className="glass-card rounded-xl border-indigo-500/20 p-5">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-2">
           {agent?.workspace && (
@@ -1026,6 +1026,10 @@ export default function Schedules() {
 
   async function createSchedule(e: React.FormEvent) {
     e.preventDefault();
+    if (prompt.trim().length < 20) {
+      alert("Prompt is too short. The agent needs detailed instructions to know what to do.");
+      return;
+    }
     const h24 =
       ampm === "PM" ? (hour === 12 ? 12 : hour + 12) : hour === 12 ? 0 : hour;
     const cron = buildCron(h24, minute, repeat, selectedDays);
@@ -1129,70 +1133,80 @@ export default function Schedules() {
   }, []);
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-950 text-white">
-      <header className="border-b border-zinc-800 px-6 py-4">
-        <div className="mx-auto flex max-w-5xl items-center gap-4">
-          <Link href="/" className="text-zinc-400 hover:text-white">
-            &larr;
-          </Link>
-          <h1 className="text-xl font-bold">Scheduled Agents</h1>
-        </div>
-      </header>
+    <div className="noise-bg relative min-h-screen bg-[var(--surface-0)] text-white">
+      {/* Ambient gradient orbs */}
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        <div className="absolute -right-40 top-0 h-[600px] w-[600px] rounded-full bg-indigo-600/[0.03] blur-[120px]" />
+        <div className="absolute -left-40 bottom-0 h-[500px] w-[500px] rounded-full bg-violet-600/[0.03] blur-[120px]" />
+      </div>
 
-      <main className="mx-auto w-full max-w-5xl px-6 py-8">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div>
-              <p className="text-zinc-400">
-                Schedule recurring agent runs. Results post to Slack.
-              </p>
-              {timezone && (
-                <p className="mt-1 text-xs text-zinc-600">
-                  All times in {timezone}
-                </p>
-              )}
+      {/* Sticky header */}
+      <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--surface-0)]/80 px-6 py-3 backdrop-blur-2xl">
+        <div className="mx-auto flex max-w-5xl items-center justify-between">
+          <div className="flex items-center gap-5">
+            <Link href="/" className="rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-white">
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+              </svg>
+            </Link>
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600">
+                <svg className="h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h1 className="text-lg font-semibold tracking-tight">Schedules</h1>
             </div>
             <WorkspaceFilter
               workspaces={workspaceNames}
               active={wsFilter}
               onChange={setWsFilter}
             />
+            {timezone && (
+              <span className="hidden text-xs text-zinc-600 sm:inline">{shortTz(timezone)}</span>
+            )}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <ViewSwitcher view={viewMode} onChange={setViewMode} />
             <button
               onClick={syncToGoogleCalendar}
               disabled={syncing}
-              className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700 hover:text-white disabled:opacity-50"
+              title="Sync to Google Calendar"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-sm text-zinc-400 transition-colors hover:border-zinc-600 hover:bg-[var(--surface-3)] hover:text-white disabled:opacity-50"
             >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
               </svg>
-              {syncing ? "Syncing..." : "Sync to Google Calendar"}
+              <span className="hidden sm:inline">{syncing ? "Syncing..." : "Sync"}</span>
             </button>
             <button
               onClick={() => setShowForm(!showForm)}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium hover:bg-blue-500"
+              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-sm font-medium shadow-lg shadow-indigo-600/10 transition-all hover:shadow-indigo-600/20"
             >
-              New Schedule
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+              <span className="hidden sm:inline">New</span>
             </button>
           </div>
         </div>
+      </header>
 
+      <main className="relative z-10 mx-auto w-full max-w-5xl px-6 py-6">
         {/* Sync toast */}
         {syncToast && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-sm">
-            <svg className="h-4 w-4 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="glass-card mb-4 flex items-center gap-2 rounded-lg border-green-500/10 px-4 py-2.5 text-sm">
+            <svg className="h-4 w-4 shrink-0 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
-            <span className="text-zinc-300">{syncToast}</span>
+            <span className="text-green-300">{syncToast}</span>
           </div>
         )}
 
         {showForm && (
           <form
             onSubmit={createSchedule}
-            className="mb-8 rounded-xl border border-zinc-800 bg-zinc-900 p-6"
+            className="glass-card mb-8 rounded-xl p-6"
           >
             {/* Agent selector -- grouped by workspace */}
             <div className="mb-5">
@@ -1413,15 +1427,25 @@ export default function Schedules() {
             {/* Prompt */}
             <div className="mb-5">
               <label className="mb-1.5 block text-sm font-medium text-zinc-300">
-                Prompt
+                Prompt <span className="text-red-400">*</span>
               </label>
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="What should the agent do on each run?"
-                rows={3}
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2.5 text-sm"
+                required
+                rows={4}
+                className={`w-full rounded-lg border bg-zinc-800 px-3 py-2.5 text-sm ${
+                  prompt.trim().length < 20
+                    ? "border-amber-600/50"
+                    : "border-zinc-700"
+                }`}
               />
+              {prompt.trim().length < 20 && (
+                <p className="mt-1 text-xs text-amber-500">
+                  Prompt should be detailed enough for the agent to know exactly what to do. Use the default or write specific instructions.
+                </p>
+              )}
             </div>
 
             {/* Slack Channel */}
@@ -1504,7 +1528,7 @@ export default function Schedules() {
               return (
                 <div
                   key={sched.id}
-                  className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900 p-4"
+                  className="glass-card-hover flex items-center justify-between rounded-xl p-4"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
