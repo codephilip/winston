@@ -80,6 +80,20 @@ func PostMessage(channel, text string) error {
 	return err
 }
 
+// PostMessageTS sends a message and returns the channel ID and message timestamp.
+// The timestamp can be used as a thread_ts for replies.
+func PostMessageTS(channel, text string) (channelID, ts string, err error) {
+	id, err := ensureInChannel(channel)
+	if err != nil {
+		return "", "", fmt.Errorf("ensure in channel: %w", err)
+	}
+	_, msgTS, err := Client.PostMessage(id,
+		slackapi.MsgOptionText(text, false),
+		slackapi.MsgOptionUsername(BotDisplayName),
+	)
+	return id, msgTS, err
+}
+
 // PostThreadReply sends a threaded reply in a Slack channel, auto-joining if needed.
 func PostThreadReply(channel, threadTS, text string) error {
 	id, err := ensureInChannel(channel)

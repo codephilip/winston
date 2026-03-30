@@ -108,15 +108,23 @@ type schedulePersisted struct {
 
 var scheduleFile = filepath.Join(os.Getenv("HOME"), ".config", "winston", "schedules.json")
 
+// SlackThreadStarter posts a message and returns (channelID, messageTS, error).
+type SlackThreadStarter func(channel, text string) (channelID, ts string, err error)
+
+// SlackThreadReplier posts a reply inside an existing thread.
+type SlackThreadReplier func(channelID, threadTS, text string) error
+
 // Manager handles agent lifecycle and routing.
 type Manager struct {
-	mu          sync.RWMutex
-	agents      map[string]*AgentConfig
-	sessions    map[string]*Session // key: slackThreadTS
-	schedules   map[string]*Schedule
-	cron        *cron.Cron
-	schedCount  int
-	SlackPost   SlackPoster
+	mu               sync.RWMutex
+	agents           map[string]*AgentConfig
+	sessions         map[string]*Session // key: slackThreadTS
+	schedules        map[string]*Schedule
+	cron             *cron.Cron
+	schedCount       int
+	SlackPost        SlackPoster
+	SlackPostTS      SlackThreadStarter
+	SlackThreadReply SlackThreadReplier
 }
 
 func NewManager() *Manager {
@@ -886,18 +894,38 @@ func (m *Manager) addScheduleEntry(sched *Schedule) error {
 
 	entryID, err := m.cron.AddFunc(cronExpr, func() {
 		log.Printf("[scheduler] Running %s: agent=%s prompt=%q", schedID, agentID, prompt)
-		result, err := m.SpawnAgent(agentID, prompt)
-		if err != nil {
-			log.Printf("[scheduler] %s failed: %v", schedID, err)
-			result = fmt.Sprintf("Scheduled agent error: %v", err)
-		}
-		if slackCh != "" && m.SlackPost != nil {
-			msg := fmt.Sprintf("*[Scheduled] /%s*\n%s", agentID, result)
+
+		if slackCh != "" && m.SlackPostTS != nil && m.SlackThreadReply != nil {
+			// Post the trigger as the thread parent so the user can reply.
+			channelID, threadTS, err := m.SlackPostTS(slackCh,
+				fmt.Sprintf(":alarm_clock: *Scheduled run: %s*\n_%s_", agentID, prompt),
+			)
+			if err != nil {
+				log.Printf("[scheduler] %s failed to post trigger: %v", schedID, err)
+				return
+			}
+
+			// Run agent in the thread and store the session for follow-ups.
+			result, runErr := m.SpawnAgentInThreadStreaming(agentID, prompt, channelID, threadTS, nil)
+			if runErr != nil {
+				log.Printf("[scheduler] %s failed: %v", schedID, runErr)
+				result = fmt.Sprintf(":x: *%s failed:*\n```%v```", agentID, runErr)
+			}
+
+			msg := result
 			if len(msg) > 3000 {
 				msg = msg[:2950] + "\n\n_...truncated_"
 			}
-			if err := m.SlackPost(slackCh, msg); err != nil {
-				log.Printf("[scheduler] Failed to post to Slack %s: %v", slackCh, err)
+			if err := m.SlackThreadReply(channelID, threadTS, msg); err != nil {
+				log.Printf("[scheduler] %s failed to post result: %v", schedID, err)
+			}
+		} else {
+			// No Slack configured — just run and log.
+			result, err := m.SpawnAgent(agentID, prompt)
+			if err != nil {
+				log.Printf("[scheduler] %s failed: %v", schedID, err)
+			} else {
+				log.Printf("[scheduler] %s result: %s", schedID, result)
 			}
 		}
 	})

@@ -44,6 +44,8 @@ func SecurityHeaders(next http.Handler) http.Handler {
 func New() http.Handler {
 	manager := agents.NewManager()
 	manager.SlackPost = slack.PostMessage
+	manager.SlackPostTS = slack.PostMessageTS
+	manager.SlackThreadReply = slack.PostThreadReply
 	voiceClient := voice.NewClient()
 
 	// API router (personal-api.polymr.io)
