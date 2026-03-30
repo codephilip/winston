@@ -2,6 +2,7 @@ package slack
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -61,8 +62,16 @@ func ensureInChannel(channel string) (string, error) {
 		return "", err
 	}
 	_, _, _, err = Client.JoinConversation(id)
-	if err != nil && !strings.Contains(err.Error(), "already_in_channel") {
-		return id, fmt.Errorf("joining channel: %w", err)
+	if err != nil {
+		errMsg := err.Error()
+		// These errors are non-fatal — the bot may already be in the channel,
+		// or the scope/channel type doesn't allow auto-join.
+		if !strings.Contains(errMsg, "already_in_channel") &&
+			!strings.Contains(errMsg, "missing_scope") &&
+			!strings.Contains(errMsg, "method_not_supported_for_channel_type") {
+			return id, fmt.Errorf("joining channel: %w", err)
+		}
+		log.Printf("[slack] JoinConversation(%s): %v (proceeding anyway)", id, err)
 	}
 	return id, nil
 }
