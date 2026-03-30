@@ -165,19 +165,21 @@ func HandleEvent(manager *agents.Manager) http.HandlerFunc {
 		}
 
 		eventType, _ := event["type"].(string)
+		subtype, _ := event["subtype"].(string)
 		text, _ := event["text"].(string)
 		channel, _ := event["channel"].(string)
 
 		threadTS, _ := event["thread_ts"].(string)
 
-		log.Printf("[slack] event type=%s channel=%s thread_ts=%q text=%q",
-			eventType, channel, threadTS, truncate(text, 60))
+		log.Printf("[slack] event type=%s subtype=%q channel=%s thread_ts=%q text=%q",
+			eventType, subtype, channel, threadTS, truncate(text, 60))
 
 		switch eventType {
 		case "app_mention":
 			go handleMention(manager, text, channel, threadTS)
 		case "message":
-			if threadTS != "" {
+			// Only handle plain user messages — skip bot posts, edits, deletes, etc.
+			if threadTS != "" && subtype == "" {
 				go handleThreadMessage(manager, text, channel, threadTS)
 			}
 		}
@@ -360,8 +362,11 @@ func handleThreadMessage(manager *agents.Manager, text, channel, threadTS string
 		return
 	}
 	if !found {
-		log.Printf("[slack] no session for thread=%s, deleting placeholder", threadTS)
-		Client.DeleteMessage(channel, msgTS)
+		log.Printf("[slack] no session for thread=%s, posting no-session notice", threadTS)
+		Client.UpdateMessage(channel, msgTS,
+			slackapi.MsgOptionText(":information_source: _No active session for this thread — the previous run may have failed or the server was restarted. Start a new run with a slash command._", false),
+			slackapi.MsgOptionUsername(BotDisplayName),
+		)
 		return
 	}
 

@@ -337,6 +337,18 @@ func (m *Manager) SpawnAgentInThreadStreaming(agentName, prompt, channel, thread
 		return "", fmt.Errorf("agent %q not found", agentName)
 	}
 
+	// Record the session stub so that follow-up thread messages can respond
+	// even if the first run fails (they'll start a fresh conversation with the same agent).
+	m.mu.Lock()
+	m.sessions[threadTS] = &Session{
+		ClaudeSessionID: "", // filled in after a successful run
+		AgentID:         agentName,
+		SlackThreadTS:   threadTS,
+		SlackChannel:    channel,
+		LastUsed:        time.Now(),
+	}
+	m.mu.Unlock()
+
 	result, err := m.runClaudeStreaming(context.Background(), agent, prompt, "", onUpdate)
 	if err != nil {
 		return "", err
@@ -345,15 +357,10 @@ func (m *Manager) SpawnAgentInThreadStreaming(agentName, prompt, channel, thread
 		return "", fmt.Errorf("agent returned no result")
 	}
 
-	// Store the session keyed by Slack thread TS
+	// Update session with the real Claude session ID.
 	m.mu.Lock()
-	m.sessions[threadTS] = &Session{
-		ClaudeSessionID: result.SessionID,
-		AgentID:         agentName,
-		SlackThreadTS:   threadTS,
-		SlackChannel:    channel,
-		LastUsed:        time.Now(),
-	}
+	m.sessions[threadTS].ClaudeSessionID = result.SessionID
+	m.sessions[threadTS].LastUsed = time.Now()
 	m.mu.Unlock()
 
 	return result.Result, nil
