@@ -338,7 +338,7 @@ function AgentCard({
   return (
     <div className="group">
       <div
-        className={`glass-card-hover relative overflow-hidden rounded-2xl transition-all duration-300 ${
+        className={`glass-card-hover relative rounded-2xl transition-all duration-300 ${
           isExpanded
             ? "border-white/[0.08] bg-white/[0.04] shadow-lg shadow-black/20"
             : ""
