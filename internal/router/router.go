@@ -112,6 +112,7 @@ func New() http.Handler {
 		r.Post("/agents/{agent}/sessions/{session}/message", manager.SendMessage)
 		r.Get("/schedules", manager.ListSchedules)
 		r.Post("/schedules", manager.CreateSchedule)
+		r.Post("/schedules/sync-calendar", handleSyncCalendar(manager))
 		r.Put("/schedules/{id}", manager.UpdateSchedule)
 		r.Delete("/schedules/{id}", manager.DeleteSchedule)
 		r.Post("/voice/transcribe", handleVoiceTranscribe(voiceClient))
@@ -325,6 +326,47 @@ func restartServices() {
 	}
 	log.Printf("[router] restart script launched (pid %d), this process will be replaced", cmd.Process.Pid)
 	// Do NOT wait — the script will kill us via launchctl bootout
+}
+
+// handleSyncCalendar creates/updates Google Calendar events for all active schedules.
+func handleSyncCalendar(manager *agents.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		schedulesJSON, _ := json.Marshal(manager.GetScheduleList())
+
+		prompt := fmt.Sprintf(`Sync these agent schedules to Google Calendar. IMPORTANT: Do NOT create duplicates.
+
+Use the Google Workspace MCP tools with user_google_email: philip.gehde@gmail.com.
+
+Step 1: Search for existing "[Agent]" events using get_events for the next 7 days. Note which schedule IDs already have calendar events.
+
+Step 2: For each schedule below, check if a matching event already exists (by title "[Agent] <agent_id>"). If it exists, update it with manage_event action "update" using the event ID. If it does not exist, create it with manage_event action "create".
+
+Schedules to sync:
+%s
+
+Event format:
+- Title: "[Agent] <agent_id>"
+- Time: derived from the cron expression
+- Recurrence: RRULE matching the cron pattern
+- Description: the schedule prompt (truncated to 500 chars), prefixed with "Schedule ID: <id>"
+- Calendar: primary
+
+Return a summary of what was created vs updated.`, string(schedulesJSON))
+
+		result, err := manager.SpawnAgent("winston", prompt)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "synced",
+			"details": result,
+		})
+	}
 }
 
 func handleKaliStatus(w http.ResponseWriter, r *http.Request) {

@@ -1042,6 +1042,17 @@ func (m *Manager) loadSessions() {
 	log.Printf("[sessions] %d session(s) restored", len(m.sessions))
 }
 
+// GetScheduleList returns all schedules as a slice (for internal use, e.g. calendar sync).
+func (m *Manager) GetScheduleList() []*Schedule {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	list := make([]*Schedule, 0, len(m.schedules))
+	for _, s := range m.schedules {
+		list = append(list, s)
+	}
+	return list
+}
+
 func (m *Manager) ListSchedules(w http.ResponseWriter, r *http.Request) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
