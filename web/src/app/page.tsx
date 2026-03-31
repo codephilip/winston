@@ -78,10 +78,10 @@ const TOOL_ICONS: Record<string, { color: string; bg: string }> = {
   Email: { color: "text-blue-400", bg: "bg-blue-500/10 ring-blue-500/20" },
 };
 
-const MODEL_BADGE: Record<string, { label: string; color: string; bg: string; ring: string }> = {
-  opus: { label: "Opus", color: "text-amber-300", bg: "bg-amber-500/10", ring: "ring-amber-500/20" },
-  sonnet: { label: "Sonnet", color: "text-blue-300", bg: "bg-blue-500/10", ring: "ring-blue-500/20" },
-  haiku: { label: "Haiku", color: "text-emerald-300", bg: "bg-emerald-500/10", ring: "ring-emerald-500/20" },
+const MODEL_BADGE: Record<string, { label: string; full: string; color: string; bg: string; ring: string }> = {
+  opus: { label: "Opus 4.6", full: "Claude Opus 4.6", color: "text-amber-300", bg: "bg-amber-500/10", ring: "ring-amber-500/20" },
+  sonnet: { label: "Sonnet 4.6", full: "Claude Sonnet 4.6", color: "text-blue-300", bg: "bg-blue-500/10", ring: "ring-blue-500/20" },
+  haiku: { label: "Haiku 4.5", full: "Claude Haiku 4.5", color: "text-emerald-300", bg: "bg-emerald-500/10", ring: "ring-emerald-500/20" },
 };
 
 /* ── helpers ── */
@@ -183,7 +183,8 @@ function ModelBadge({ model }: { model: string }) {
   const style = MODEL_BADGE[model] || MODEL_BADGE.sonnet;
   return (
     <span
-      className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ring-1 ring-inset ${style.color} ${style.bg} ${style.ring}`}
+      title={style.full}
+      className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold tracking-wider ring-1 ring-inset ${style.color} ${style.bg} ${style.ring}`}
     >
       {style.label}
     </span>

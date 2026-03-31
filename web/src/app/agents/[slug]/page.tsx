@@ -20,6 +20,11 @@ interface HealthStatus {
 }
 
 const MODELS = ["haiku", "sonnet", "opus"] as const;
+const MODEL_LABELS: Record<string, string> = {
+  haiku: "Haiku 4.5",
+  sonnet: "Sonnet 4.6",
+  opus: "Opus 4.6",
+};
 type Model = (typeof MODELS)[number];
 
 function StatusDot({ status }: { status: "ok" | "loading" | "down" }) {
@@ -201,7 +206,7 @@ export default function AgentChat() {
                       : "text-zinc-500 hover:text-zinc-300"
                   } ${modelLoading ? "opacity-50" : ""}`}
                 >
-                  {m}
+                  {MODEL_LABELS[m] || m}
                 </button>
               ))}
             </div>
