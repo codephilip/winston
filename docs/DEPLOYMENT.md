@@ -25,7 +25,13 @@ chmod 600 .env
 
 Create `web/.env.local` with `POLYMR_USER` and `POLYMR_PASS` matching your `.env` values.
 
-See `.env.example` for all available variables.
+See `.env.example` for all available variables. Key additions beyond the basics:
+
+| Variable | Purpose |
+|----------|---------|
+| `SLACK_OWNER_ID` | Your Slack user ID (e.g., `U0AG558DLQ6`). Used to tag you in scheduled agent results. |
+| `ELEVENLABS_API_KEY` | Required for voice chat (STT + TTS). |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Required for Google Calendar sync. |
 
 ### 3. Build
 
@@ -45,6 +51,8 @@ Three macOS LaunchAgents run in `~/Library/LaunchAgents/`:
 | Cloudflare tunnel | `com.cloudflare.cloudflared.plist` | -- |
 
 All are configured with `RunAtLoad` and `KeepAlive` (auto-start on login, auto-restart on crash).
+
+The `install-services.sh` script bakes environment variables (including `SLACK_OWNER_ID`) into the router plist so they're available to the Go process.
 
 ### Load services
 
@@ -78,6 +86,17 @@ launchctl list | grep -E "polymr|cloudflared"
 ```
 
 Exit code `0` in the second column = running.
+
+## Persistent Data
+
+The router stores state in `~/.config/winston/`:
+
+| File | Contents | Survives restart? |
+|------|----------|------------------|
+| `sessions.json` | Active agent sessions (keyed by Slack thread TS) | Yes |
+| `schedules.json` | All scheduled agent runs with cron patterns | Yes |
+
+These files are created automatically on first use. Deleting them resets all sessions/schedules.
 
 ## Logs
 
@@ -113,6 +132,10 @@ Both subdomains route to the Go router, which handles host-based routing interna
 
 Never commit `.env`, `.env.local`, or plist files to git.
 
+## Ops Notifications
+
+The router posts to Slack on key lifecycle events (startup, shutdown, frontend down/recovered, model changes, prompt changes). Set `SLACK_NOTIFY_CHANNEL` in `.env` to enable. If unset, events are logged locally only.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -121,4 +144,7 @@ Never commit `.env`, `.env.local`, or plist files to git.
 | 502 Bad Gateway | Go router crashed. Check `polymr.err.log`, rebuild, restart. |
 | Frontend 500 | Stale build. Run `cd web && npm run build`, restart frontend. |
 | Slack not responding | Check `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET`. Look for HMAC errors in logs. |
-| 429 Too Many Requests | Rate limit: 30 req/min API, 15 req/min auth. |
+| 429 Too Many Requests | Rate limit: 100 req/min API, 10 req/min auth. |
+| Schedules lost | Check `~/.config/winston/schedules.json` exists and is readable. |
+| Scheduled runs not tagging you | Set `SLACK_OWNER_ID` in `.env` and reinstall services. |
+| `missing_scope` errors in logs | Bot may lack `channels:join` scope but is already in the channel — this is tolerated. |

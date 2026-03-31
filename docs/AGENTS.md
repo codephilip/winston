@@ -8,8 +8,9 @@ An agent is a Markdown file in `~/.claude/agents/` with YAML frontmatter and a s
 
 - A **Slack slash command** (`/myagent do something`)
 - An **@mention handler** (`@Winston myagent do something`)
-- An **HTTP API endpoint** (`POST /api/agents/myagent/run`)
-- A **web dashboard page** (`/agents/myagent`)
+- **HTTP API endpoints** (`POST /api/agents/myagent/run`, `GET /api/agents/myagent`)
+- A **web dashboard card** with tool icons, model badge, and system prompt viewer
+- An **individual chat page** (`/agents/myagent`)
 
 The router does not care which channel you're in — agents work the same in every channel. More on channel behavior [below](#how-agents-work-in-slack-channels).
 
@@ -27,6 +28,7 @@ name: researcher
 description: Deep research agent for any topic
 model: sonnet
 timeout: 600
+max_turns: 50
 ---
 
 You are a research agent. When given a topic, use web search to find
@@ -40,10 +42,11 @@ Always verify claims across multiple sources before including them.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `name` | Yes | — | Agent ID. This becomes the slash command name (`/researcher`) and the API route. Use lowercase, no spaces. |
-| `description` | No | — | One-line description. Shown when a user @mentions Winston without specifying an agent. |
-| `model` | No | `sonnet` | Claude model to use: `opus`, `sonnet`, or `haiku`. Opus is most capable but slowest. Haiku is fastest but least capable. |
+| `name` | Yes | — | Agent ID. This becomes the slash command name (`/researcher`) and the API route. Use lowercase, no spaces. Prefix with `workspace-` for grouping (see [Workspaces](#workspaces)). |
+| `description` | No | — | One-line description. Shown on the dashboard and when a user @mentions Winston without specifying an agent. |
+| `model` | No | `sonnet` | Claude model: `opus` (Opus 4.6), `sonnet` (Sonnet 4.6), or `haiku` (Haiku 4.5). Can be changed at runtime via the web UI or API. |
 | `timeout` | No | `600` | Max execution time in seconds before the agent is killed. |
+| `max_turns` | No | `25` | Max conversation turns per agent run. |
 
 ### Step 2: Restart the router
 
@@ -68,7 +71,7 @@ If there's a problem with your file (missing frontmatter, no `name` field), you'
 
 ### Step 3: Create the Slack slash command
 
-Go to **[api.slack.com/apps](https://api.slack.com/apps)** → your Winston app → **Features → Slash Commands** → **Create New Command**:
+Go to **[api.slack.com/apps](https://api.slack.com/apps)** -> your Winston app -> **Features -> Slash Commands** -> **Create New Command**:
 
 | Field | Value |
 |-------|-------|
@@ -92,28 +95,85 @@ The agent will post a "thinking..." message in a thread and stream its response 
 
 ---
 
+## Workspaces
+
+Agent names with a hyphen are auto-grouped by workspace prefix on the dashboard:
+
+| Agent file name | Workspace | Short name |
+|----------------|-----------|------------|
+| `codephil-research.md` | codephil | research |
+| `codephil-youtube.md` | codephil | youtube |
+| `rivalytics-social.md` | rivalytics | social |
+| `winston.md` | *(top-level)* | winston |
+
+The dashboard shows:
+- A **workspace dropdown** to filter by workspace (colored initials, checkmarks)
+- Agents grouped under their workspace heading
+- Pipeline ordering within workspaces (research -> director -> assets -> deliver)
+
+This is purely a UI grouping — in Slack and the API, you always use the full agent name (`/codephil-research`).
+
+---
+
+## Tool Auto-Detection
+
+The router scans each agent's system prompt for keywords and tags detected tools automatically. These appear as icon badges on the dashboard agent cards.
+
+Supported tool detections:
+
+| Keywords in system prompt | Tool icon shown |
+|--------------------------|----------------|
+| `web search`, `web_search` | Web Search |
+| `git`, `github`, `repository` | Git |
+| `figma` | Figma |
+| `google workspace`, `google calendar`, `gmail` | Google Workspace |
+| `slack` | Slack |
+| `youtube` | YouTube |
+| `image gen`, `nano banana`, `thumbnail` | Image Gen |
+| `playwright`, `browser` | Playwright |
+| `security`, `pentest`, `nmap`, `exploit` | Security Tools |
+| `remotion`, `video` | Remotion |
+| `schedule`, `cron` | Scheduling |
+
+Agents with many tools show the first 3 as icon+label badges, with a clickable **+N** overflow that expands to show the rest.
+
+---
+
 ## Updating an Existing Agent
 
-Edit the file directly. The system prompt is everything after the closing `---` of the frontmatter.
+### Edit the file directly
 
 ```bash
-# Edit the marketing agent
 vim ~/.claude/agents/marketing.md
 ```
 
-Common changes:
+After saving, restart the router: `make build && make run`
 
-- **Change the model** — update the `model:` field in frontmatter (e.g., `sonnet` → `opus` for harder tasks)
-- **Change the system prompt** — edit the Markdown body below the frontmatter
-- **Change the timeout** — update `timeout:` (in seconds)
+### Change the model at runtime (no restart needed)
 
-After saving, restart the router:
+**Web UI:** Open the agent chat page (`/agents/marketing`) and click the model switcher in the header (Haiku 4.5 / Sonnet 4.6 / Opus 4.6). This updates the `.md` file on disk and triggers an automatic service restart.
 
+**API:**
 ```bash
-make build && make run
+curl -X PUT -u admin:yourpass http://localhost:8080/api/agents/marketing/model \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "opus"}'
 ```
 
-No Slack configuration changes needed — the slash command stays the same.
+A notification is posted to Slack when the model changes.
+
+### Edit the system prompt at runtime
+
+**Web UI:** On the dashboard, click any agent card, then click the edit toggle in the system prompt viewer. Edit the markdown and click Save.
+
+**API:**
+```bash
+curl -X PUT -u admin:yourpass http://localhost:8080/api/agents/marketing/prompt \
+  -H 'Content-Type: application/json' \
+  -d '{"system_prompt": "You are a revised marketing agent..."}'
+```
+
+Both update the `.md` file on disk, notify Slack, and trigger a restart.
 
 ---
 
@@ -147,18 +207,46 @@ Once an agent responds in a thread, you can **reply in that thread** to continue
 
 The router keeps a session for each thread (keyed by the thread timestamp). When you reply, it resumes the same Claude session with full conversation history.
 
-**Important:** Sessions live in memory. If the router restarts, active thread sessions are lost and replies in old threads won't get responses. Start a new slash command to begin a fresh session.
+**Sessions persist across restarts** — they're saved to `~/.config/winston/sessions.json`. A session stub is stored before the agent run starts, so follow-ups work even if the initial run fails or is interrupted.
 
 ### Channel-specific tips
 
 | Channel type | Slash commands | @mentions | Thread replies |
 |-------------|---------------|-----------|---------------|
-| **Public channel** | Always work | Work if bot is in the channel | Work while session is active |
-| **Private channel** | Always work | Must invite the bot first (`/invite @Winston`) | Work while session is active |
-| **DM with the bot** | Always work | Always work | Work while session is active |
-| **Group DM** | Always work | Must include the bot in the group | Work while session is active |
+| **Public channel** | Always work | Work if bot is in the channel | Work while session exists |
+| **Private channel** | Always work | Must invite the bot first (`/invite @Winston`) | Work while session exists |
+| **DM with the bot** | Always work | Always work | Work while session exists |
+| **Group DM** | Always work | Must include the bot in the group | Work while session exists |
 
 Slash commands are the most reliable — they work everywhere without needing to invite the bot.
+
+---
+
+## Scheduled Agent Runs
+
+Agents can be scheduled to run automatically on a cron pattern:
+
+```bash
+# Via the /schedules web page (cron builder UI)
+# Or via the API:
+curl -X POST -u admin:yourpass http://localhost:8080/api/schedules \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "agent_id": "marketing",
+    "prompt": "Generate weekly competitor report",
+    "cron": "0 9 * * 1",
+    "slack_channel": "marketing-reports",
+    "timezone": "America/Denver"
+  }'
+```
+
+When a schedule fires:
+1. Posts a trigger message to the Slack channel
+2. Runs the agent and posts results as a **thread reply**
+3. Tags the owner (`@PG`) so they get a notification
+4. Stores a session so the owner can reply in the thread to continue
+
+Schedules persist across restarts (`~/.config/winston/schedules.json`).
 
 ---
 
@@ -168,7 +256,7 @@ The system prompt is what makes your agent useful. Some guidelines:
 
 **Be specific about the agent's role.** "You are a marketing specialist" is better than "You are a helpful assistant."
 
-**Tell it what tools to use.** Claude Code agents have access to web search, file reading, bash commands, and more. If your agent should use specific tools, say so:
+**Tell it what tools to use.** Claude Code agents have access to web search, file reading, bash commands, and more. If your agent should use specific tools, say so — and the dashboard will auto-detect and show the tool icons:
 
 ```markdown
 When asked to analyze a website, use web search and browsing tools
@@ -199,6 +287,7 @@ name: reviewer
 description: Code review agent that checks PRs for bugs and style
 model: opus
 timeout: 900
+max_turns: 50
 ---
 
 You are a senior code reviewer. When given a PR number or diff, analyze it for:
@@ -243,6 +332,14 @@ curl -X POST -u admin:yourpass http://localhost:8080/api/agents/researcher/run \
 
 # List all registered agents via API
 curl -u admin:yourpass http://localhost:8080/api/agents
+
+# Get agent detail (including system prompt)
+curl -u admin:yourpass http://localhost:8080/api/agents/researcher
+
+# Change an agent's model
+curl -X PUT -u admin:yourpass http://localhost:8080/api/agents/researcher/model \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "opus"}'
 ```
 
 ---
@@ -255,5 +352,7 @@ curl -u admin:yourpass http://localhost:8080/api/agents
 | Slash command returns "Unknown agent" | Agent name doesn't match command | The `name:` in frontmatter must exactly match the slash command (e.g., `name: researcher` for `/researcher`). |
 | "thinking..." message but no response | Agent timed out | Increase `timeout:` in frontmatter, or simplify the prompt. Check router logs for timeout errors. |
 | @mention doesn't respond | Bot not in channel | Invite the bot: `/invite @Winston`. Or use slash commands instead (work everywhere). |
-| Thread replies don't work | Session expired (router restarted) | Start a new conversation with a fresh slash command. |
-| Slash command not available in Slack | Not created in Slack app settings | Go to api.slack.com/apps → Slash Commands → Create New Command. |
+| Thread replies don't work | Session not found | Sessions persist across restarts now. If still failing, check that the original slash command completed successfully. |
+| Slash command not available in Slack | Not created in Slack app settings | Go to api.slack.com/apps -> Slash Commands -> Create New Command. |
+| Model change doesn't take effect | Restart failed | Check logs after model change. The service should auto-restart. Try `./scripts/restart.sh` manually. |
+| Agent not in workspace group | Name missing hyphen | Prefix with `workspace-` (e.g., `codephil-research`) for grouping. |
